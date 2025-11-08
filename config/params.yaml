@@ -1,0 +1,32 @@
+floor_removal_node:
+  ros__parameters:
+    # Input topics
+    input_cloud_topic: "/camera/depth/color/points"
+
+    # Output topics
+    output_floor_cloud_topic: "/floor_cloud"
+    output_no_floor_cloud_topic: "/no_floor_cloud"
+
+    # RANSAC parameters for floor detection
+    ransac_distance_threshold: 0.02  # meters - points within this distance are considered inliers
+    ransac_max_iterations: 100       # maximum iterations for RANSAC
+    floor_normal_z_threshold: 0.15   # minimum Y component of normal in camera frame (Y=down)
+
+    # Floor region parameters (camera optical frame: X=right, Y=down, Z=forward)
+    floor_detection_thickness: 0.15  # meters - thickness for RANSAC plane detection (15cm)
+                                     # Large enough to get sufficient points after voxelization
+
+    floor_removal_thickness: 0.03    # meters - thickness for actual floor removal (3cm)
+                                     # Small to preserve objects on floor (e.g., 10cm pallets)
+
+    floor_margin: 0.01               # additional margin around detected floor plane (meters)
+
+    # Floor stability parameters (prevent flickering)
+    min_inlier_ratio: 0.3            # minimum ratio of inliers to accept plane (0.3 = 30%)
+    max_plane_change: 0.2            # maximum plane change between frames (meters)
+    max_min_z_change: 0.05           # maximum max_y change between frames (meters) - prevents jumps
+    use_previous_plane: true         # use previous plane if current is unstable
+
+    # Voxel grid downsampling (reduces computation and noise)
+    use_voxel_grid: true             # enable voxel grid downsampling
+    voxel_leaf_size: 0.01            # voxel size (meters) - 1cm, reduces ~100k to ~10-15k points
