@@ -249,7 +249,7 @@ bool PlaneRemover::detectFloorPlane(
   return true;
 }
 
-bool PlaneRemover::isPlaneStable(double nx, double ny, double nz, double d, double inlier_ratio)
+bool PlaneRemover::isPlaneStable(double /* nx */, double ny, double /* nz */, double d, double inlier_ratio)
 {
   // Check 1: Inlier ratio should be high enough
   if (inlier_ratio < params_.min_inlier_ratio) {
