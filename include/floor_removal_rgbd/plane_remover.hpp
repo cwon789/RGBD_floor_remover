@@ -4,6 +4,7 @@
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <memory>
+#include "floor_removal_rgbd/stringer_detector.hpp"
 
 namespace floor_removal_rgbd
 {
@@ -37,29 +38,6 @@ struct PlaneRemoverParams
   double stringer_width_max = 0.15;         // maximum stringer width (meters)
   double stringer_height_min = 0.08;        // minimum stringer height (meters)
   double stringer_height_max = 0.20;        // maximum stringer height (meters)
-};
-
-/**
- * @brief Bounding box for detected object
- */
-struct BoundingBox
-{
-  double min_x, max_x;
-  double min_y, max_y;
-  double min_z, max_z;
-
-  // Centroid (average of actual points, not geometric center)
-  double centroid_x = 0.0;
-  double centroid_y = 0.0;
-  double centroid_z = 0.0;
-
-  double width() const { return max_x - min_x; }
-  double height() const { return max_y - min_y; }
-  double depth() const { return max_z - min_z; }
-
-  double center_x() const { return (min_x + max_x) / 2.0; }
-  double center_y() const { return (min_y + max_y) / 2.0; }
-  double center_z() const { return (min_z + max_z) / 2.0; }
 };
 
 /**
@@ -207,15 +185,8 @@ private:
     pcl::PointCloud<pcl::PointXYZRGB>::Ptr& floor_cloud,
     pcl::PointCloud<pcl::PointXYZRGB>::Ptr& no_floor_cloud);
 
-  /**
-   * @brief Detect pallet stringers in the no-floor cloud
-   * @param cloud Input cloud (no-floor points)
-   * @return Vector of detected stringer bounding boxes
-   */
-  std::vector<BoundingBox> detectStringers(
-    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud);
-
   PlaneRemoverParams params_;
+  std::unique_ptr<StringerDetector> stringer_detector_;
 };
 
 }  // namespace floor_removal_rgbd

@@ -1,10 +1,8 @@
 #include "floor_removal_rgbd/plane_remover.hpp"
 
 #include <pcl/segmentation/sac_segmentation.h>
-#include <pcl/segmentation/extract_clusters.h>
 #include <pcl/filters/extract_indices.h>
 #include <pcl/filters/voxel_grid.h>
-#include <pcl/kdtree/kdtree.h>
 #include <algorithm>
 #include <cmath>
 
@@ -14,11 +12,26 @@ namespace floor_removal_rgbd
 PlaneRemover::PlaneRemover(const PlaneRemoverParams& params)
   : params_(params)
 {
+  // Initialize stringer detector with corresponding parameters
+  StringerDetectorParams stringer_params;
+  stringer_params.width_min = params_.stringer_width_min;
+  stringer_params.width_max = params_.stringer_width_max;
+  stringer_params.height_min = params_.stringer_height_min;
+  stringer_params.height_max = params_.stringer_height_max;
+  stringer_detector_ = std::make_unique<StringerDetector>(stringer_params);
 }
 
 void PlaneRemover::setParams(const PlaneRemoverParams& params)
 {
   params_ = params;
+
+  // Update stringer detector parameters
+  StringerDetectorParams stringer_params;
+  stringer_params.width_min = params_.stringer_width_min;
+  stringer_params.width_max = params_.stringer_width_max;
+  stringer_params.height_min = params_.stringer_height_min;
+  stringer_params.height_max = params_.stringer_height_max;
+  stringer_detector_->setParams(stringer_params);
 }
 
 void PlaneRemover::reset()
@@ -88,23 +101,10 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>
   classifyPoints(cloud_for_processing, nx, ny, nz, d, result.floor_cloud_voxelized, result.no_floor_cloud_voxelized);
 
   // Step 6: Detect stringers in the no-floor cloud (voxelized for efficiency)
-  if (params_.enable_stringer_detection) {
-    result.detected_stringers = detectStringers(result.no_floor_cloud_voxelized);
-
-    // Compute center points for each detected stringer (using centroid)
-    for (const auto& bbox : result.detected_stringers) {
-      pcl::PointXYZRGB center;
-      center.x = bbox.centroid_x;
-      center.y = bbox.centroid_y;
-      center.z = bbox.centroid_z;
-      center.r = 0;
-      center.g = 255;
-      center.b = 0;
-      result.stringer_centers->points.push_back(center);
-    }
-    result.stringer_centers->width = result.stringer_centers->points.size();
-    result.stringer_centers->height = 1;
-    result.stringer_centers->is_dense = false;
+  if (params_.enable_stringer_detection && stringer_detector_) {
+    auto stringer_result = stringer_detector_->detect(result.no_floor_cloud_voxelized);
+    result.detected_stringers = stringer_result.detected_stringers;
+    result.stringer_centers = stringer_result.stringer_centers;
   }
 
   return result;
@@ -279,134 +279,6 @@ void PlaneRemover::classifyPoints(
   no_floor_cloud->width = no_floor_cloud->points.size();
   no_floor_cloud->height = 1;
   no_floor_cloud->is_dense = false;
-}
-
-std::vector<BoundingBox> PlaneRemover::detectStringers(
-  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud)
-{
-  std::vector<BoundingBox> stringers;
-
-  if (!params_.enable_stringer_detection) {
-    return stringers;
-  }
-
-  if (cloud->points.empty()) {
-    std::cout << "[DEBUG] No-floor cloud is empty, cannot detect stringers" << std::endl;
-    return stringers;
-  }
-
-  std::cout << "[DEBUG] Detecting stringers in cloud with " << cloud->points.size() << " points" << std::endl;
-
-  // Additional voxel downsampling if cloud is too large
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_for_clustering = cloud;
-  if (cloud->points.size() > 5000) {
-    std::cout << "[DEBUG] Cloud too large (" << cloud->points.size()
-              << " points), applying additional downsampling for clustering" << std::endl;
-
-    pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_downsampled(new pcl::PointCloud<pcl::PointXYZRGB>);
-    pcl::VoxelGrid<pcl::PointXYZRGB> voxel_filter;
-    voxel_filter.setInputCloud(cloud);
-    voxel_filter.setLeafSize(0.05, 0.05, 0.05);  // 5cm voxels for clustering
-    voxel_filter.filter(*cloud_downsampled);
-
-    cloud_for_clustering = cloud_downsampled;
-    std::cout << "[DEBUG] Downsampled to " << cloud_for_clustering->points.size() << " points" << std::endl;
-  }
-
-  // Use Euclidean clustering to segment the cloud into clusters
-  pcl::search::KdTree<pcl::PointXYZRGB>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZRGB>);
-  tree->setInputCloud(cloud_for_clustering);
-
-  std::vector<pcl::PointIndices> cluster_indices;
-  pcl::EuclideanClusterExtraction<pcl::PointXYZRGB> ec;
-  ec.setClusterTolerance(0.08);  // 8cm tolerance (increased for downsampled cloud)
-  ec.setMinClusterSize(5);       // minimum 5 points (reduced for heavily downsampled)
-  ec.setMaxClusterSize(10000);   // reduced max size
-  ec.setSearchMethod(tree);
-  ec.setInputCloud(cloud_for_clustering);
-  ec.extract(cluster_indices);
-
-  std::cout << "[DEBUG] Found " << cluster_indices.size() << " clusters" << std::endl;
-
-  // For each cluster, compute bounding box and check if it matches stringer dimensions
-  for (const auto& indices : cluster_indices) {
-    if (indices.indices.empty()) {
-      continue;
-    }
-
-    // Compute bounding box and centroid
-    BoundingBox bbox;
-    bbox.min_x = bbox.min_y = bbox.min_z = 1e6;
-    bbox.max_x = bbox.max_y = bbox.max_z = -1e6;
-
-    double sum_x = 0.0, sum_y = 0.0, sum_z = 0.0;
-    size_t num_points = indices.indices.size();
-
-    for (const auto& idx : indices.indices) {
-      const auto& point = cloud_for_clustering->points[idx];
-
-      // Update bounding box
-      bbox.min_x = std::min(bbox.min_x, static_cast<double>(point.x));
-      bbox.max_x = std::max(bbox.max_x, static_cast<double>(point.x));
-      bbox.min_y = std::min(bbox.min_y, static_cast<double>(point.y));
-      bbox.max_y = std::max(bbox.max_y, static_cast<double>(point.y));
-      bbox.min_z = std::min(bbox.min_z, static_cast<double>(point.z));
-      bbox.max_z = std::max(bbox.max_z, static_cast<double>(point.z));
-
-      // Accumulate for centroid
-      sum_x += point.x;
-      sum_y += point.y;
-      sum_z += point.z;
-    }
-
-    // Compute centroid (average of all points in cluster)
-    bbox.centroid_x = sum_x / num_points;
-    bbox.centroid_y = sum_y / num_points;
-    bbox.centroid_z = sum_z / num_points;
-
-    // Check if dimensions match stringer criteria
-    // Camera frame: X=right, Y=down, Z=forward
-    double width_x = bbox.width();   // horizontal (left-right)
-    double height_y = bbox.height(); // vertical (floor to top)
-    double depth_z = bbox.depth();   // horizontal (front-back)
-
-    std::cout << "[DEBUG] Cluster: "
-              << "X=" << width_x << "m, "
-              << "Y=" << height_y << "m, "
-              << "Z=" << depth_z << "m" << std::endl;
-
-    // Stringer check: height must be in range,
-    // and at least one horizontal dimension (X or Z) must be in width range
-    bool height_ok = (height_y >= params_.stringer_height_min &&
-                      height_y <= params_.stringer_height_max);
-
-    bool width_x_ok = (width_x >= params_.stringer_width_min &&
-                       width_x <= params_.stringer_width_max);
-
-    bool width_z_ok = (depth_z >= params_.stringer_width_min &&
-                       depth_z <= params_.stringer_width_max);
-
-    if (height_ok && (width_x_ok || width_z_ok)) {
-      std::cout << "[DEBUG] ✓ Cluster matches stringer criteria! "
-                << "(height=" << height_y << "m, "
-                << "X=" << width_x << "m, "
-                << "Z=" << depth_z << "m)" << std::endl;
-      stringers.push_back(bbox);
-    } else {
-      std::cout << "[DEBUG] ✗ Rejected: "
-                << "height_ok=" << height_ok
-                << ", width_x_ok=" << width_x_ok
-                << ", width_z_ok=" << width_z_ok
-                << " (height range: " << params_.stringer_height_min << "-"
-                << params_.stringer_height_max
-                << "m, width range: " << params_.stringer_width_min << "-"
-                << params_.stringer_width_max << "m)" << std::endl;
-    }
-  }
-
-  std::cout << "[DEBUG] Total stringers detected: " << stringers.size() << std::endl;
-
-  return stringers;
 }
 
 }  // namespace floor_removal_rgbd

@@ -28,6 +28,22 @@ include_directories(
   ${PCL_INCLUDE_DIRS}
 )
 
+# Core library: stringer_detector
+add_library(stringer_detector
+  src/stringer_detector.cpp
+)
+
+ament_target_dependencies(stringer_detector
+  rclcpp
+  sensor_msgs
+  pcl_conversions
+  pcl_ros
+)
+
+target_link_libraries(stringer_detector
+  ${PCL_LIBRARIES}
+)
+
 # Core library: plane_remover
 add_library(plane_remover
   src/plane_remover.cpp
@@ -41,6 +57,7 @@ ament_target_dependencies(plane_remover
 )
 
 target_link_libraries(plane_remover
+  stringer_detector
   ${PCL_LIBRARIES}
 )
 
@@ -72,8 +89,9 @@ install(TARGETS
   DESTINATION lib/${PROJECT_NAME}
 )
 
-# Install library
+# Install libraries
 install(TARGETS
+  stringer_detector
   plane_remover
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
