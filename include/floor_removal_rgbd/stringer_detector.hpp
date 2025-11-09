@@ -72,7 +72,7 @@ struct StringerDetectionResult
  *
  * This class uses Euclidean clustering and dimensional analysis to detect
  * pallet stringers (wooden support beams). It's designed to work with
- * point clouds in camera optical frame (X=right, Y=down, Z=forward).
+ * point clouds in robot frame (X=forward, Y=left, Z=up).
  */
 class StringerDetector
 {

@@ -20,8 +20,8 @@ struct PlaneRemoverParams
   double floor_normal_z_threshold = 0.15;   // minimum Z component of normal
 
   // Floor detection mode
-  bool auto_floor_detection_mode = true;    // true: auto-detect using y_max, false: use camera height
-  double camera_height = 0.80;              // meters - camera height from floor (camera frame Y)
+  bool auto_floor_detection_mode = true;    // true: auto-detect using z_min, false: use floor height
+  double floor_height = 0.0;                // meters - floor height in robot frame (Z coordinate)
 
   // Floor region parameters
   double floor_detection_thickness = 0.15;  // meters - region for RANSAC plane detection
@@ -38,6 +38,21 @@ struct PlaneRemoverParams
   double stringer_width_max = 0.15;         // maximum stringer width (meters)
   double stringer_height_min = 0.08;        // minimum stringer height (meters)
   double stringer_height_max = 0.20;        // maximum stringer height (meters)
+
+  // Camera extrinsic parameters (camera optical frame to robot base frame)
+  // Translation: camera position in robot frame (meters)
+  double cam_tx = 0.0;  // X offset (forward)
+  double cam_ty = 0.0;  // Y offset (left)
+  double cam_tz = 0.0;  // Z offset (up)
+
+  // Rotation: Euler angles (radians) - applied in order: Roll(X) -> Pitch(Y) -> Yaw(Z)
+  double cam_roll = 0.0;   // rotation around X axis (radians)
+  double cam_pitch = 0.0;  // rotation around Y axis (radians)
+  double cam_yaw = 0.0;    // rotation around Z axis (radians)
+
+  // Use default optical frame to base frame transform (ignores above extrinsics)
+  // Default: cam_optical (X=right, Y=down, Z=forward) -> base (X=forward, Y=left, Z=up)
+  bool use_default_transform = true;
 };
 
 /**
@@ -78,9 +93,11 @@ struct PlaneRemovalResult
  * @brief Core algorithm for floor plane detection and removal
  *
  * This class handles the detection and removal of floor planes from point clouds.
- * It uses RANSAC for plane fitting and supports temporal stability filtering.
+ * It uses RANSAC for plane fitting and operates in the robot coordinate frame.
  *
- * Coordinate system: Standard robot frame (X=forward, Y=left, Z=up)
+ * Input: Camera optical frame (X=right, Y=down, Z=forward)
+ * Processing: Robot frame (X=forward, Y=left, Z=up)
+ * Output: Robot frame (X=forward, Y=left, Z=up)
  */
 class PlaneRemover
 {
@@ -133,20 +150,20 @@ private:
     const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud);
 
   /**
-   * @brief Find maximum Y (camera frame: Y=down)
+   * @brief Find minimum Z (robot frame: Z=up)
    * @param cloud Input cloud
-   * @return Maximum Y value
+   * @return Minimum Z value
    */
-  double findMaxY(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud);
+  double findMinZ(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud);
 
   /**
-   * @brief Extract floor region points in camera frame (points near maximum Y)
+   * @brief Extract floor region points in robot frame (points near minimum Z)
    * @param cloud Input cloud
-   * @param max_y Maximum Y value
+   * @param min_z Minimum Z value
    * @return Floor region point cloud
    */
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr extractFloorRegionCameraFrame(
-    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, double max_y);
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr extractFloorRegionRobotFrame(
+    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, double min_z);
 
   /**
    * @brief Detect floor plane using RANSAC
@@ -164,10 +181,10 @@ private:
 
   /**
    * @brief Validate detected plane
-   * @param ny Plane normal Y
+   * @param nz Plane normal Z
    * @return True if plane is valid
    */
-  bool isPlaneValid(double ny);
+  bool isPlaneValid(double nz);
 
   /**
    * @brief Classify points as floor or non-floor based on plane equation

@@ -12,14 +12,15 @@ floor_removal_node:
     # RANSAC parameters for floor detection
     ransac_distance_threshold: 0.02  # meters - points within this distance are considered inliers
     ransac_max_iterations: 100       # maximum iterations for RANSAC
-    floor_normal_z_threshold: 0.15   # minimum Y component of normal in camera frame (Y=down)
+    floor_normal_z_threshold: 0.7    # minimum Z component of normal in robot frame (Z=up)
+                                     # For horizontal floor, nz should be close to 1.0
 
-    # Floor detection mode
-    auto_floor_detection_mode: false # true: auto-detect floor using y_max, false: use camera height
-    camera_height: 0.17              # meters - camera height from floor when auto_detection is false
-                                     # Points with Y >= this value are considered floor
+    # Floor detection mode (robot frame: X=forward, Y=left, Z=up)
+    auto_floor_detection_mode: false  # true: auto-detect floor using z_min, false: use floor_height
+    floor_height: 0.0                # meters - floor Z coordinate in robot frame when auto_detection is false
+                                     # Points with Z <= floor_height + detection_thickness are considered floor
 
-    # Floor region parameters (camera optical frame: X=right, Y=down, Z=forward)
+    # Floor region parameters (robot frame: X=forward, Y=left, Z=up)
     floor_detection_thickness: 0.15  # meters - thickness for RANSAC plane detection (15cm)
                                      # Large enough to get sufficient points after voxelization
     floor_removal_thickness: 0.03    # meters - thickness for actual floor removal (3cm)
@@ -36,3 +37,22 @@ floor_removal_node:
     stringer_width_max: 0.1         # maximum stringer width (meters) - 15cm
     stringer_height_min: 0.1        # minimum stringer height (meters) - 8cm
     stringer_height_max: 0.2        # maximum stringer height (meters) - 20cm
+
+    # Camera extrinsic parameters
+    # NOTE: Default optical->base transform is ALWAYS applied first
+    # (optical: X=right,Y=down,Z=forward -> base: X=forward,Y=left,Z=up)
+
+    use_default_transform: false      # true: use only default transform
+                                     # false: apply ADDITIONAL extrinsic on top of default
+
+    # Additional extrinsic transform (only used if use_default_transform: false)
+    # Applied AFTER default optical->base transform
+    # Translation: additional camera offset in robot base frame (meters)
+    cam_tx: 0.0                      # X offset (forward)
+    cam_ty: 0.0                      # Y offset (left)
+    cam_tz: 0.16                      # Z offset (up)
+
+    # Rotation: Euler angles in robot base frame (radians) - ZYX order
+    cam_roll: 0.0                    # rotation around X axis (radians)
+    cam_pitch: 0.174533                   # rotation around Y axis (radians)
+    cam_yaw: 0.0                     # rotation around Z axis (radians)

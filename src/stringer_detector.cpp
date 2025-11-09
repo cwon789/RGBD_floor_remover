@@ -172,26 +172,26 @@ BoundingBox StringerDetector::computeBoundingBox(
 
 bool StringerDetector::matchesStringerCriteria(const BoundingBox& bbox)
 {
-  // Camera frame: X=right, Y=down, Z=forward
-  double width_x = bbox.width();   // horizontal (left-right)
-  double height_y = bbox.height(); // vertical (floor to top)
-  double depth_z = bbox.depth();   // horizontal (front-back)
+  // Robot frame: X=forward, Y=left, Z=up
+  double depth_x = bbox.width();   // horizontal (front-back)
+  double width_y = bbox.height();  // horizontal (left-right)
+  double height_z = bbox.depth();  // vertical (floor to top)
 
   // Stringer check: height must be in range,
-  // and at least one horizontal dimension (X or Z) must be in width range
-  bool height_ok = (height_y >= params_.height_min && height_y <= params_.height_max);
-  bool width_x_ok = (width_x >= params_.width_min && width_x <= params_.width_max);
-  bool width_z_ok = (depth_z >= params_.width_min && depth_z <= params_.width_max);
+  // and at least one horizontal dimension (X or Y) must be in width range
+  bool height_ok = (height_z >= params_.height_min && height_z <= params_.height_max);
+  bool width_x_ok = (depth_x >= params_.width_min && depth_x <= params_.width_max);
+  bool width_y_ok = (width_y >= params_.width_min && width_y <= params_.width_max);
 
-  if (height_ok && (width_x_ok || width_z_ok)) {
+  if (height_ok && (width_x_ok || width_y_ok)) {
     return true;
   }
 
   // Debug rejected clusters
   std::cout << "[StringerDetector] ✗ Rejected cluster: "
-            << "H=" << height_y << "m (" << params_.height_min << "-" << params_.height_max << "), "
-            << "X=" << width_x << "m, "
-            << "Z=" << depth_z << "m (" << params_.width_min << "-" << params_.width_max << ")" << std::endl;
+            << "H(Z)=" << height_z << "m (" << params_.height_min << "-" << params_.height_max << "), "
+            << "W(X)=" << depth_x << "m, "
+            << "W(Y)=" << width_y << "m (" << params_.width_min << "-" << params_.width_max << ")" << std::endl;
 
   return false;
 }

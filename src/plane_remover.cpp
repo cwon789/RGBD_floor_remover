@@ -49,28 +49,35 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>
 
   result.total_points = cloud_camera->points.size();
 
-  // Step 1: Apply voxel grid downsampling if enabled (work in camera frame directly)
-  auto cloud_for_processing = cloud_camera;
+  // Step 1: Transform to robot frame (X=forward, Y=left, Z=up)
+  auto cloud_robot = transformToStandardFrame(cloud_camera);
+  std::cout << "[DEBUG] Transformed cloud size: " << cloud_robot->points.size() << std::endl;
+
+  // Step 2: Apply voxel grid downsampling if enabled (work in robot frame)
+  auto cloud_for_processing = cloud_robot;
   if (params_.use_voxel_grid) {
-    cloud_for_processing = applyVoxelGrid(cloud_camera);
+    cloud_for_processing = applyVoxelGrid(cloud_robot);
     result.voxelized_points = cloud_for_processing->points.size();
   } else {
-    result.voxelized_points = cloud_camera->points.size();
+    result.voxelized_points = cloud_robot->points.size();
   }
 
-  // Step 2: Determine floor height based on mode
-  double max_y;
+  // Step 3: Determine floor height based on mode
+  double min_z;
   if (params_.auto_floor_detection_mode) {
-    // Auto mode: Find maximum Y (camera frame: Y=down, so max Y = floor)
-    max_y = findMaxY(cloud_for_processing);
+    // Auto mode: Find minimum Z (robot frame: Z=up, so min Z = floor)
+    min_z = findMinZ(cloud_for_processing);
+    std::cout << "[DEBUG] Auto mode - min_z: " << min_z << std::endl;
   } else {
-    // Fixed mode: Use configured camera height
-    max_y = params_.camera_height;
+    // Fixed mode: Use configured floor height
+    min_z = params_.floor_height;
+    std::cout << "[DEBUG] Fixed mode - floor_height: " << min_z << std::endl;
   }
 
-  // Step 3: Extract floor region (points near maximum Y in camera frame)
-  auto floor_region = extractFloorRegionCameraFrame(cloud_for_processing, max_y);
+  // Step 4: Extract floor region (points near minimum Z in robot frame)
+  auto floor_region = extractFloorRegionRobotFrame(cloud_for_processing, min_z);
   result.floor_region_points = floor_region->points.size();
+  std::cout << "[DEBUG] Floor region points: " << result.floor_region_points << std::endl;
 
   if (floor_region->points.empty()) {
     return result;
@@ -82,8 +89,8 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>
     return result;
   }
 
-  // Step 6: Validate plane
-  if (!isPlaneValid(ny)) {
+  // Step 6: Validate plane (in robot frame, nz should be significant)
+  if (!isPlaneValid(nz)) {
     return result;
   }
 
@@ -93,11 +100,11 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>
   result.nz = nz;
   result.d = d;
 
-  // Step 4: Classify all points in camera frame cloud (original)
-  classifyPoints(cloud_camera, nx, ny, nz, d, result.floor_cloud, result.no_floor_cloud);
+  // Step 7: Classify all points in robot frame cloud
+  classifyPoints(cloud_robot, nx, ny, nz, d, result.floor_cloud, result.no_floor_cloud);
   result.floor_points = result.floor_cloud->points.size();
 
-  // Step 5: Classify voxelized cloud
+  // Step 8: Classify voxelized cloud
   classifyPoints(cloud_for_processing, nx, ny, nz, d, result.floor_cloud_voxelized, result.no_floor_cloud_voxelized);
 
   // Step 6: Detect stringers in the no-floor cloud (voxelized for efficiency)
@@ -113,31 +120,57 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>
 pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::transformToStandardFrame(
   const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud_camera)
 {
-  // Transform from camera optical frame to standard robot frame
-  // Camera: X=right, Y=down, Z=forward
-  // Standard: X=forward, Y=left, Z=up
-  //
-  // Transformation:
-  //   std.x = cam.z (forward = depth)
-  //   std.y = -cam.x (left = -right)
-  //   std.z = -cam.y (up = -down)
-
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_standard(new pcl::PointCloud<pcl::PointXYZRGB>);
   cloud_standard->header = cloud_camera->header;
   cloud_standard->points.reserve(cloud_camera->points.size());
 
+  // Step 1: Always apply default optical->base transform first
+  // Camera optical: X=right, Y=down, Z=forward
+  // Robot base: X=forward, Y=left, Z=up
   for (const auto& cam_point : cloud_camera->points) {
-    // Skip invalid points
     if (!std::isfinite(cam_point.x) || !std::isfinite(cam_point.y) || !std::isfinite(cam_point.z)) {
       continue;
     }
 
-    pcl::PointXYZRGB std_point;
-    std_point.x = cam_point.z;   // forward (depth becomes forward)
-    std_point.y = -cam_point.x;  // left (right becomes left, negated)
-    std_point.z = -cam_point.y;  // up (down becomes up, negated)
-    std_point.rgb = cam_point.rgb;
-    cloud_standard->points.push_back(std_point);
+    pcl::PointXYZRGB base_point;
+    base_point.x = cam_point.z;   // forward = depth
+    base_point.y = -cam_point.x;  // left = -right
+    base_point.z = -cam_point.y;  // up = -down
+    base_point.rgb = cam_point.rgb;
+
+    // Step 2: Apply additional extrinsic transform if enabled
+    if (!params_.use_default_transform) {
+      // Build rotation matrix from Euler angles (ZYX order: Yaw * Pitch * Roll)
+      double cr = std::cos(params_.cam_roll);
+      double sr = std::sin(params_.cam_roll);
+      double cp = std::cos(params_.cam_pitch);
+      double sp = std::sin(params_.cam_pitch);
+      double cy = std::cos(params_.cam_yaw);
+      double sy = std::sin(params_.cam_yaw);
+
+      // Rotation matrix (ZYX Euler)
+      double r11 = cy * cp;
+      double r12 = cy * sp * sr - sy * cr;
+      double r13 = cy * sp * cr + sy * sr;
+      double r21 = sy * cp;
+      double r22 = sy * sp * sr + cy * cr;
+      double r23 = sy * sp * cr - cy * sr;
+      double r31 = -sp;
+      double r32 = cp * sr;
+      double r33 = cp * cr;
+
+      // Apply rotation to base_point
+      double x_rot = r11 * base_point.x + r12 * base_point.y + r13 * base_point.z;
+      double y_rot = r21 * base_point.x + r22 * base_point.y + r23 * base_point.z;
+      double z_rot = r31 * base_point.x + r32 * base_point.y + r33 * base_point.z;
+
+      // Apply translation
+      base_point.x = x_rot + params_.cam_tx;
+      base_point.y = y_rot + params_.cam_ty;
+      base_point.z = z_rot + params_.cam_tz;
+    }
+
+    cloud_standard->points.push_back(base_point);
   }
 
   cloud_standard->width = cloud_standard->points.size();
@@ -170,27 +203,27 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::applyVoxelGrid(
   return cloud_downsampled;
 }
 
-double PlaneRemover::findMaxY(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud)
+double PlaneRemover::findMinZ(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud)
 {
-  // Find maximum Y (camera frame: Y=down, so max Y = lowest point = floor)
-  double max_y = -1e6;
+  // Find minimum Z (robot frame: Z=up, so min Z = lowest point = floor)
+  double min_z = 1e6;
   for (const auto& point : cloud->points) {
-    max_y = std::max(max_y, static_cast<double>(point.y));
+    min_z = std::min(min_z, static_cast<double>(point.z));
   }
 
-  return max_y;
+  return min_z;
 }
 
-pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::extractFloorRegionCameraFrame(
-  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, double max_y)
+pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::extractFloorRegionRobotFrame(
+  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, double min_z)
 {
-  // Camera frame: Y=down, so floor is near max Y
+  // Robot frame: Z=up, so floor is near min Z
   // Use DETECTION thickness (wider) for RANSAC to get enough points
-  double floor_y_min = max_y - params_.floor_detection_thickness;
+  double floor_z_max = min_z + params_.floor_detection_thickness;
 
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr floor_region(new pcl::PointCloud<pcl::PointXYZRGB>);
   for (const auto& point : cloud->points) {
-    if (point.y >= floor_y_min && point.y <= max_y) {
+    if (point.z >= min_z && point.z <= floor_z_max) {
       floor_region->points.push_back(point);
     }
   }
@@ -240,11 +273,12 @@ bool PlaneRemover::detectFloorPlane(
   return true;
 }
 
-bool PlaneRemover::isPlaneValid(double ny)
+bool PlaneRemover::isPlaneValid(double nz)
 {
-  // Normal should point downward in camera frame (Y component should be positive and significant)
-  // Camera frame: Y=down, so floor normal should have positive Y
-  if (std::abs(ny) < params_.floor_normal_z_threshold) {
+  // Normal should point upward in robot frame (Z component should be positive and significant)
+  // Robot frame: Z=up, so floor normal should have positive Z (close to 1.0 for horizontal floor)
+  // Check if normal is pointing upward (positive Z) and is significant
+  if (nz < params_.floor_normal_z_threshold) {
     return false;
   }
 

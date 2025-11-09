@@ -22,7 +22,7 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   params.ransac_max_iterations = this->get_parameter("ransac_max_iterations").as_int();
   params.floor_normal_z_threshold = this->get_parameter("floor_normal_z_threshold").as_double();
   params.auto_floor_detection_mode = this->get_parameter("auto_floor_detection_mode").as_bool();
-  params.camera_height = this->get_parameter("camera_height").as_double();
+  params.floor_height = this->get_parameter("floor_height").as_double();
   params.floor_detection_thickness = this->get_parameter("floor_detection_thickness").as_double();
   params.floor_removal_thickness = this->get_parameter("floor_removal_thickness").as_double();
   params.floor_margin = this->get_parameter("floor_margin").as_double();
@@ -33,6 +33,15 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   params.stringer_width_max = this->get_parameter("stringer_width_max").as_double();
   params.stringer_height_min = this->get_parameter("stringer_height_min").as_double();
   params.stringer_height_max = this->get_parameter("stringer_height_max").as_double();
+
+  // Camera extrinsic parameters
+  params.use_default_transform = this->get_parameter("use_default_transform").as_bool();
+  params.cam_tx = this->get_parameter("cam_tx").as_double();
+  params.cam_ty = this->get_parameter("cam_ty").as_double();
+  params.cam_tz = this->get_parameter("cam_tz").as_double();
+  params.cam_roll = this->get_parameter("cam_roll").as_double();
+  params.cam_pitch = this->get_parameter("cam_pitch").as_double();
+  params.cam_yaw = this->get_parameter("cam_yaw").as_double();
 
   plane_remover_ = std::make_unique<PlaneRemover>(params);
 
@@ -71,13 +80,21 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   RCLCPP_INFO(this->get_logger(), "  Output floor (voxelized): %s", output_floor_cloud_voxelized_topic_.c_str());
   RCLCPP_INFO(this->get_logger(), "  Output no-floor (voxelized): %s", output_no_floor_cloud_voxelized_topic_.c_str());
   RCLCPP_INFO(this->get_logger(), "  Floor detection mode: %s",
-              params.auto_floor_detection_mode ? "auto (y_max)" : "fixed (camera height)");
+              params.auto_floor_detection_mode ? "auto (z_min)" : "fixed (floor height)");
   if (!params.auto_floor_detection_mode) {
-    RCLCPP_INFO(this->get_logger(), "  Camera height: %.3f m", params.camera_height);
+    RCLCPP_INFO(this->get_logger(), "  Floor height: %.3f m", params.floor_height);
   }
   RCLCPP_INFO(this->get_logger(), "  Voxel grid: %s (leaf size: %.3f m)",
               params.use_voxel_grid ? "enabled" : "disabled",
               params.voxel_leaf_size);
+  RCLCPP_INFO(this->get_logger(), "  Camera transform: %s",
+              params.use_default_transform ? "default (optical->base)" : "custom extrinsic");
+  if (!params.use_default_transform) {
+    RCLCPP_INFO(this->get_logger(), "  Extrinsic T: [%.3f, %.3f, %.3f] m",
+                params.cam_tx, params.cam_ty, params.cam_tz);
+    RCLCPP_INFO(this->get_logger(), "  Extrinsic R: [%.3f, %.3f, %.3f] rad",
+                params.cam_roll, params.cam_pitch, params.cam_yaw);
+  }
 }
 
 void FloorRemovalServerNode::declareParameters()
@@ -100,7 +117,7 @@ void FloorRemovalServerNode::declareParameters()
 
   // Floor detection mode
   this->declare_parameter<bool>("auto_floor_detection_mode", true);
-  this->declare_parameter<double>("camera_height", 0.80);
+  this->declare_parameter<double>("floor_height", 0.0);
 
   // Floor region parameters
   this->declare_parameter<double>("floor_detection_thickness", 0.15);
@@ -117,6 +134,15 @@ void FloorRemovalServerNode::declareParameters()
   this->declare_parameter<double>("stringer_width_max", 0.15);
   this->declare_parameter<double>("stringer_height_min", 0.08);
   this->declare_parameter<double>("stringer_height_max", 0.20);
+
+  // Camera extrinsic parameters
+  this->declare_parameter<bool>("use_default_transform", true);
+  this->declare_parameter<double>("cam_tx", 0.0);
+  this->declare_parameter<double>("cam_ty", 0.0);
+  this->declare_parameter<double>("cam_tz", 0.0);
+  this->declare_parameter<double>("cam_roll", 0.0);
+  this->declare_parameter<double>("cam_pitch", 0.0);
+  this->declare_parameter<double>("cam_yaw", 0.0);
 
   // Legacy parameters (kept for compatibility)
   this->declare_parameter<double>("floor_height_min", -5.0);

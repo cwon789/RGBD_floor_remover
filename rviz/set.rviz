@@ -6,8 +6,6 @@ Panels:
       Expanded:
         - /Global Options1
         - /Status1
-        - /MarkerArray1/Status1
-        - /MarkerArray1/Topic1
       Splitter Ratio: 0.5
     Tree Height: 523
   - Class: rviz_common/Selection
@@ -137,7 +135,7 @@ Visualization Manager:
       Color: 25; 255; 0
       Color Transformer: FlatColor
       Decay Time: 0
-      Enabled: false
+      Enabled: true
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Max Intensity: 4096
@@ -157,25 +155,6 @@ Visualization Manager:
         Value: /floor_cloud_voxelized
       Use Fixed Frame: true
       Use rainbow: true
-      Value: false
-    - Class: rviz_default_plugins/Axes
-      Enabled: true
-      Length: 0.10000000149011612
-      Name: camera
-      Radius: 0.019999999552965164
-      Reference Frame: <Fixed Frame>
-      Value: true
-    - Class: rviz_default_plugins/MarkerArray
-      Enabled: true
-      Name: MarkerArray
-      Namespaces:
-        stringers: true
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /stringer_markers
       Value: true
     - Alpha: 1
       Autocompute Intensity Bounds: true
@@ -195,7 +174,7 @@ Visualization Manager:
       Max Intensity: 4096
       Min Color: 0; 0; 0
       Min Intensity: 0
-      Name: PointCloud2
+      Name: Stringer_center
       Position Transformer: XYZ
       Selectable: true
       Size (Pixels): 20
@@ -209,6 +188,25 @@ Visualization Manager:
         Value: /stringer_centers
       Use Fixed Frame: true
       Use rainbow: true
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Stringer
+      Namespaces:
+        stringers: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /stringer_markers
+      Value: true
+    - Class: rviz_default_plugins/Axes
+      Enabled: true
+      Length: 0.10000000149011612
+      Name: Base_link
+      Radius: 0.019999999552965164
+      Reference Frame: <Fixed Frame>
       Value: true
   Enabled: true
   Global Options:
@@ -253,25 +251,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/XYOrbit
-      Distance: 0.37347644567489624
+      Distance: 1.3669137954711914
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.09556227177381516
-        Y: -0.12337460368871689
-        Z: 5.651265382766724e-06
+        X: 0.04585842788219452
+        Y: -0.18602216243743896
+        Z: -2.2649765014648438e-06
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: -1.1297967433929443
+      Pitch: -0.13479700684547424
       Target Frame: <Fixed Frame>
       Value: XYOrbit (rviz_default_plugins)
-      Yaw: 4.755570888519287
+      Yaw: 2.556725025177002
     Saved: ~
 Window Geometry:
   Displays:
