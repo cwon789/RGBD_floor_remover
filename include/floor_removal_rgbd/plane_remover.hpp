@@ -23,12 +23,6 @@ struct PlaneRemoverParams
   double floor_removal_thickness = 0.03;    // meters - thickness for actual floor removal
   double floor_margin = 0.01;               // additional margin around detected plane
 
-  // Stability parameters
-  double min_inlier_ratio = 0.3;            // minimum ratio of inliers to accept plane
-  double max_plane_change = 0.2;            // maximum plane change between frames (meters)
-  double max_min_z_change = 0.05;           // maximum min_z change between frames (meters)
-  bool use_previous_plane = true;           // use previous plane if current is unstable
-
   // Voxel grid parameters
   bool use_voxel_grid = true;               // enable voxel grid downsampling
   double voxel_leaf_size = 0.005;           // voxel size (meters)
@@ -41,12 +35,13 @@ struct PlaneRemovalResult
 {
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr floor_cloud;
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr no_floor_cloud;
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr floor_cloud_voxelized;
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr no_floor_cloud_voxelized;
 
   // Plane coefficients: nx*x + ny*y + nz*z + d = 0
   double nx, ny, nz, d;
 
   bool plane_found = false;
-  bool used_previous_plane = false;
 
   size_t total_points = 0;
   size_t floor_points = 0;
@@ -56,6 +51,8 @@ struct PlaneRemovalResult
   PlaneRemovalResult()
     : floor_cloud(new pcl::PointCloud<pcl::PointXYZRGB>)
     , no_floor_cloud(new pcl::PointCloud<pcl::PointXYZRGB>)
+    , floor_cloud_voxelized(new pcl::PointCloud<pcl::PointXYZRGB>)
+    , no_floor_cloud_voxelized(new pcl::PointCloud<pcl::PointXYZRGB>)
     , nx(0), ny(0), nz(0), d(0)
   {}
 };
@@ -119,11 +116,11 @@ private:
     const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud);
 
   /**
-   * @brief Find maximum Y with temporal smoothing (camera frame: Y=down)
+   * @brief Find maximum Y (camera frame: Y=down)
    * @param cloud Input cloud
-   * @return Smoothed maximum Y value
+   * @return Maximum Y value
    */
-  double findMaxYWithSmoothing(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud);
+  double findMaxY(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud);
 
   /**
    * @brief Extract floor region points in camera frame (points near maximum Y)
@@ -149,15 +146,11 @@ private:
     double& nx, double& ny, double& nz, double& d, double& inlier_ratio);
 
   /**
-   * @brief Check if detected plane is stable (compared to previous frame)
-   * @param nx Plane normal X
+   * @brief Validate detected plane
    * @param ny Plane normal Y
-   * @param nz Plane normal Z
-   * @param d Plane distance
-   * @param inlier_ratio Inlier ratio
-   * @return True if plane is stable
+   * @return True if plane is valid
    */
-  bool isPlaneStable(double nx, double ny, double nz, double d, double inlier_ratio);
+  bool isPlaneValid(double ny);
 
   /**
    * @brief Classify points as floor or non-floor based on plane equation
@@ -176,16 +169,6 @@ private:
     pcl::PointCloud<pcl::PointXYZRGB>::Ptr& no_floor_cloud);
 
   PlaneRemoverParams params_;
-
-  // Temporal state for stability
-  bool has_previous_plane_ = false;
-  double prev_nx_ = 0.0;
-  double prev_ny_ = 0.0;
-  double prev_nz_ = 0.0;
-  double prev_d_ = 0.0;
-
-  bool has_previous_min_z_ = false;
-  double prev_min_z_ = 0.0;
 };
 
 }  // namespace floor_removal_rgbd

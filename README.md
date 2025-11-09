@@ -84,10 +84,8 @@ Since Y points downward, the floor has the **maximum Y value** (lowest points).
    - Filters noise and improves performance
    - Configurable leaf size (default: 1cm)
 
-2. **Find Maximum Y with Temporal Smoothing**
+2. **Find Maximum Y**
    - Locates the lowest point (max Y) in the scene
-   - Applies temporal smoothing to prevent jumps
-   - Limits change to `max_min_z_change` between frames
 
 3. **Extract Floor Region (Detection)**
    - Selects points within `floor_detection_thickness` from max Y
@@ -96,15 +94,9 @@ Since Y points downward, the floor has the **maximum Y value** (lowest points).
 
 4. **RANSAC Plane Fitting**
    - Runs RANSAC on floor region to find plane equation: `nx*x + ny*y + nz*z + d = 0`
-   - Requires minimum inlier ratio for acceptance
    - Validates plane normal (should point downward: Y component > threshold)
 
-5. **Plane Stability Check**
-   - Checks inlier ratio (quality of fit)
-   - Checks plane change from previous frame
-   - Falls back to previous plane if current is unstable
-
-6. **Point Classification (Removal)**
+5. **Point Classification (Removal)**
    - Calculates signed distance from each point to plane
    - Uses thin removal thickness (3cm) to preserve objects
    - Removes only points within `±(floor_removal_thickness/2 + floor_margin)`
@@ -167,24 +159,6 @@ The normal threshold ensures the detected plane is approximately horizontal (flo
 - If RANSAC fails (too few points): Increase `floor_detection_thickness`
 - If objects on floor are removed: Decrease `floor_removal_thickness`
 - If floor edges are missed: Increase `floor_margin`
-
-### Stability Parameters
-
-These parameters prevent detection flickering during camera motion.
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `min_inlier_ratio` | `0.3` | Minimum ratio of inliers to accept plane (0.3 = 30%)<br>Higher = stricter quality requirement |
-| `max_plane_change` | `0.2` | Maximum plane change between frames (meters)<br>Rejects sudden large changes |
-| `max_min_z_change` | `0.05` | Maximum max_y change between frames (meters)<br>Prevents jumps in floor location |
-| `use_previous_plane` | `true` | Enable fallback to previous plane if current is unstable |
-
-**How Stability Works**:
-1. Algorithm detects plane in current frame
-2. Checks quality (inlier ratio > `min_inlier_ratio`)
-3. Checks change from previous frame (< `max_plane_change`)
-4. If unstable and `use_previous_plane = true`, uses previous plane
-5. Stores current plane for next frame
 
 ### Voxel Grid Parameters
 
@@ -262,10 +236,6 @@ floor_removal_node:
 
     # Adjust removal thickness based on object height
     floor_removal_thickness: 0.05    # Increase to 5cm for thicker floor layer
-
-    # Adjust stability if floor flickers
-    min_inlier_ratio: 0.4            # Stricter quality check
-    use_previous_plane: true         # Enable temporal stability
 ```
 
 ## Examples
@@ -285,18 +255,15 @@ floor_margin: 0.01
 
 ### Example 2: Noisy Environment
 
-**Scenario**: Camera vibration causes flickering detection
+**Scenario**: Reduce noise in the point cloud
 
 **Configuration**:
 ```yaml
 use_voxel_grid: true
 voxel_leaf_size: 0.015           # Larger voxels filter more noise
-min_inlier_ratio: 0.4            # Require higher quality
-max_plane_change: 0.1            # Smaller change tolerance
-use_previous_plane: true
 ```
 
-**Result**: Stable floor detection despite vibration ✓
+**Result**: Cleaner point cloud with reduced noise ✓
 
 ### Example 3: Performance Optimization
 
@@ -342,16 +309,6 @@ ransac_max_iterations: 50        # Fewer iterations
 - Decrease `floor_removal_thickness` to 0.02m or 0.01m
 - Ensure objects are at least 2x removal thickness height
 - Check plane accuracy (visualize `/floor_cloud`)
-
-### Issue: Floor detection flickers
-
-**Cause**: Unstable detection between frames
-
-**Solutions**:
-- Enable stability: `use_previous_plane: true`
-- Increase `min_inlier_ratio` to 0.4 or 0.5
-- Decrease `max_plane_change` to 0.1m
-- Increase `voxel_leaf_size` to filter noise
 
 ### Issue: Floor edges are missed
 

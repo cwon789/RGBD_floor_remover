@@ -54,6 +54,8 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr floor_cloud_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr no_floor_cloud_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr floor_cloud_voxelized_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr no_floor_cloud_voxelized_pub_;
 
   // TF2
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -66,6 +68,8 @@ private:
   std::string input_cloud_topic_;
   std::string output_floor_cloud_topic_;
   std::string output_no_floor_cloud_topic_;
+  std::string output_floor_cloud_voxelized_topic_;
+  std::string output_no_floor_cloud_voxelized_topic_;
 
   // Frame IDs
   std::string camera_frame_;
