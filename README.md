@@ -16,11 +16,12 @@ This design allows the algorithm to:
 
 ## Features
 
+- **Dual Detection Modes**: Auto-detect floor using y_max OR use fixed camera height
 - **Camera Frame Processing**: Works directly in camera optical frame (no coordinate transformation required)
 - **Dual-Thickness Strategy**: Separate parameters for detection and removal
-- **Temporal Stability**: Uses previous frame data to prevent detection flickering
 - **Voxel Grid Downsampling**: Reduces computational cost and filters noise
 - **Object Preservation**: Configurable removal thickness to preserve objects on floor
+- **Multiple Output Topics**: Publishes both original and voxelized point clouds
 
 ## Architecture
 
@@ -51,10 +52,10 @@ Core algorithm class that handles floor plane detection and removal.
 **Key Methods:**
 - `process()`: Main processing pipeline
 - `applyVoxelGrid()`: Downsamples point cloud
-- `findMaxYWithSmoothing()`: Finds floor location with temporal smoothing
+- `findMaxY()`: Finds floor location (auto mode)
 - `extractFloorRegionCameraFrame()`: Extracts candidate floor points
 - `detectFloorPlane()`: Runs RANSAC to detect floor plane
-- `isPlaneStable()`: Checks plane stability across frames
+- `isPlaneValid()`: Validates detected plane
 - `classifyPoints()`: Separates floor and non-floor points
 
 #### `FloorRemovalServerNode`
@@ -84,13 +85,14 @@ Since Y points downward, the floor has the **maximum Y value** (lowest points).
    - Filters noise and improves performance
    - Configurable leaf size (default: 1cm)
 
-2. **Find Maximum Y**
-   - Locates the lowest point (max Y) in the scene
+2. **Determine Floor Height**
+   - **Auto Mode** (`auto_floor_detection_mode: true`): Finds maximum Y value in the scene
+   - **Fixed Mode** (`auto_floor_detection_mode: false`): Uses configured `camera_height` value
 
 3. **Extract Floor Region (Detection)**
-   - Selects points within `floor_detection_thickness` from max Y
+   - Selects points within `floor_detection_thickness` from determined height
    - Uses wider region (15cm) to ensure sufficient points for RANSAC
-   - Example: if max_y = 0.8m, selects points with Y ∈ [0.65, 0.8]
+   - Example: if floor height = 0.8m, selects points with Y ∈ [0.65, 0.8]
 
 4. **RANSAC Plane Fitting**
    - Runs RANSAC on floor region to find plane equation: `nx*x + ny*y + nz*z + d = 0`
@@ -134,8 +136,21 @@ Removal phase:
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `input_cloud_topic` | `/camera/depth/color/points` | Input point cloud topic |
-| `output_floor_cloud_topic` | `/floor_cloud` | Output topic for floor points |
-| `output_no_floor_cloud_topic` | `/no_floor_cloud` | Output topic for non-floor points |
+| `output_floor_cloud_topic` | `/floor_cloud` | Output topic for floor points (original resolution) |
+| `output_no_floor_cloud_topic` | `/no_floor_cloud` | Output topic for non-floor points (original resolution) |
+| `output_floor_cloud_voxelized_topic` | `/floor_cloud_voxelized` | Output topic for floor points (voxelized) |
+| `output_no_floor_cloud_voxelized_topic` | `/no_floor_cloud_voxelized` | Output topic for non-floor points (voxelized) |
+
+### Floor Detection Mode
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `auto_floor_detection_mode` | `true` | `true`: Auto-detect floor using y_max<br>`false`: Use fixed camera height |
+| `camera_height` | `0.80` | Camera height from floor (meters)<br>Used only when `auto_floor_detection_mode: false` |
+
+**Mode Details**:
+- **Auto Mode** (`true`): Automatically finds the lowest point (y_max) in the scene. Best for testing and dynamic environments.
+- **Fixed Mode** (`false`): Uses the configured `camera_height` value. Best for production environments with fixed camera positions.
 
 ### RANSAC Parameters
 
@@ -218,8 +233,10 @@ rviz2
 
 # Add displays:
 # - PointCloud2: /camera/depth/color/points (original)
-# - PointCloud2: /floor_cloud (detected floor)
-# - PointCloud2: /no_floor_cloud (scene without floor)
+# - PointCloud2: /floor_cloud (detected floor - original resolution)
+# - PointCloud2: /no_floor_cloud (scene without floor - original resolution)
+# - PointCloud2: /floor_cloud_voxelized (detected floor - voxelized)
+# - PointCloud2: /no_floor_cloud_voxelized (scene without floor - voxelized)
 
 # Set Fixed Frame to: camera_color_optical_frame
 ```
@@ -231,6 +248,10 @@ Edit `config/params.yaml` and restart the node:
 ```yaml
 floor_removal_node:
   ros__parameters:
+    # Switch to fixed camera height mode (production)
+    auto_floor_detection_mode: false
+    camera_height: 0.75              # Camera is 75cm from floor
+
     # Adjust detection thickness if RANSAC fails
     floor_detection_thickness: 0.20  # Increase to 20cm
 
@@ -240,12 +261,41 @@ floor_removal_node:
 
 ## Examples
 
-### Example 1: Preserving Pallets
+### Example 1: Testing with Auto Detection
+
+**Scenario**: Testing and calibration with dynamic floor detection
+
+**Configuration**:
+```yaml
+auto_floor_detection_mode: true  # Auto-detect floor
+use_voxel_grid: true
+voxel_leaf_size: 0.01
+```
+
+**Result**: Automatically finds floor in varying environments ✓
+
+### Example 2: Production with Fixed Camera Height
+
+**Scenario**: Production environment with camera mounted at fixed height
+
+**Configuration**:
+```yaml
+auto_floor_detection_mode: false
+camera_height: 0.75              # Camera is 75cm from floor
+floor_detection_thickness: 0.15
+floor_removal_thickness: 0.03
+```
+
+**Result**: Consistent floor removal without dynamic detection overhead ✓
+
+### Example 3: Preserving Pallets
 
 **Scenario**: Detect floor but preserve 10cm pallets
 
 **Configuration**:
 ```yaml
+auto_floor_detection_mode: false
+camera_height: 0.80
 floor_detection_thickness: 0.15  # Wide enough for RANSAC
 floor_removal_thickness: 0.03    # Thin removal (< 10cm)
 floor_margin: 0.01
@@ -253,19 +303,7 @@ floor_margin: 0.01
 
 **Result**: Floor removed, pallets preserved ✓
 
-### Example 2: Noisy Environment
-
-**Scenario**: Reduce noise in the point cloud
-
-**Configuration**:
-```yaml
-use_voxel_grid: true
-voxel_leaf_size: 0.015           # Larger voxels filter more noise
-```
-
-**Result**: Cleaner point cloud with reduced noise ✓
-
-### Example 3: Performance Optimization
+### Example 4: Performance Optimization
 
 **Scenario**: 30Hz processing required
 

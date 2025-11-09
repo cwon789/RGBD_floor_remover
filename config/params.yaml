@@ -22,7 +22,7 @@ floor_removal_node:
     # Floor region parameters (camera optical frame: X=right, Y=down, Z=forward)
     floor_detection_thickness: 0.15  # meters - thickness for RANSAC plane detection (15cm)
                                      # Large enough to get sufficient points after voxelization
-    floor_removal_thickness: 0.01    # meters - thickness for actual floor removal (3cm)
+    floor_removal_thickness: 0.03    # meters - thickness for actual floor removal (3cm)
                                      # Small to preserve objects on floor (e.g., 10cm pallets)
     floor_margin: 0.01               # additional margin around detected floor plane (meters)
 
