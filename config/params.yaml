@@ -14,13 +14,18 @@ floor_removal_node:
     ransac_max_iterations: 100       # maximum iterations for RANSAC
     floor_normal_z_threshold: 0.15   # minimum Y component of normal in camera frame (Y=down)
 
+    # Floor detection mode
+    auto_floor_detection_mode: false # true: auto-detect floor using y_max, false: use camera height
+    camera_height: 0.17              # meters - camera height from floor when auto_detection is false
+                                     # Points with Y >= this value are considered floor
+
     # Floor region parameters (camera optical frame: X=right, Y=down, Z=forward)
     floor_detection_thickness: 0.15  # meters - thickness for RANSAC plane detection (15cm)
                                      # Large enough to get sufficient points after voxelization
-    floor_removal_thickness: 0.03    # meters - thickness for actual floor removal (3cm)
+    floor_removal_thickness: 0.01    # meters - thickness for actual floor removal (3cm)
                                      # Small to preserve objects on floor (e.g., 10cm pallets)
     floor_margin: 0.01               # additional margin around detected floor plane (meters)
 
     # Voxel grid downsampling (reduces computation and noise)
     use_voxel_grid: true             # enable voxel grid downsampling
-    voxel_leaf_size: 0.01            # voxel size (meters) - 1cm, reduces ~100k to ~10-15k points
+    voxel_leaf_size: 0.03            # voxel size (meters) - 1cm, reduces ~100k to ~10-15k points

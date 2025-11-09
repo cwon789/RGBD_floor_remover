@@ -43,8 +43,15 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>
     result.voxelized_points = cloud_camera->points.size();
   }
 
-  // Step 2: Find maximum Y (camera frame: Y=down, so max Y = floor)
-  double max_y = findMaxY(cloud_for_processing);
+  // Step 2: Determine floor height based on mode
+  double max_y;
+  if (params_.auto_floor_detection_mode) {
+    // Auto mode: Find maximum Y (camera frame: Y=down, so max Y = floor)
+    max_y = findMaxY(cloud_for_processing);
+  } else {
+    // Fixed mode: Use configured camera height
+    max_y = params_.camera_height;
+  }
 
   // Step 3: Extract floor region (points near maximum Y in camera frame)
   auto floor_region = extractFloorRegionCameraFrame(cloud_for_processing, max_y);

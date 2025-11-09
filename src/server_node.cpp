@@ -21,6 +21,8 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   params.ransac_distance_threshold = this->get_parameter("ransac_distance_threshold").as_double();
   params.ransac_max_iterations = this->get_parameter("ransac_max_iterations").as_int();
   params.floor_normal_z_threshold = this->get_parameter("floor_normal_z_threshold").as_double();
+  params.auto_floor_detection_mode = this->get_parameter("auto_floor_detection_mode").as_bool();
+  params.camera_height = this->get_parameter("camera_height").as_double();
   params.floor_detection_thickness = this->get_parameter("floor_detection_thickness").as_double();
   params.floor_removal_thickness = this->get_parameter("floor_removal_thickness").as_double();
   params.floor_margin = this->get_parameter("floor_margin").as_double();
@@ -57,6 +59,11 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   RCLCPP_INFO(this->get_logger(), "  Output no-floor: %s", output_no_floor_cloud_topic_.c_str());
   RCLCPP_INFO(this->get_logger(), "  Output floor (voxelized): %s", output_floor_cloud_voxelized_topic_.c_str());
   RCLCPP_INFO(this->get_logger(), "  Output no-floor (voxelized): %s", output_no_floor_cloud_voxelized_topic_.c_str());
+  RCLCPP_INFO(this->get_logger(), "  Floor detection mode: %s",
+              params.auto_floor_detection_mode ? "auto (y_max)" : "fixed (camera height)");
+  if (!params.auto_floor_detection_mode) {
+    RCLCPP_INFO(this->get_logger(), "  Camera height: %.3f m", params.camera_height);
+  }
   RCLCPP_INFO(this->get_logger(), "  Voxel grid: %s (leaf size: %.3f m)",
               params.use_voxel_grid ? "enabled" : "disabled",
               params.voxel_leaf_size);
@@ -79,6 +86,10 @@ void FloorRemovalServerNode::declareParameters()
   this->declare_parameter<double>("ransac_distance_threshold", 0.02);
   this->declare_parameter<int>("ransac_max_iterations", 100);
   this->declare_parameter<double>("floor_normal_z_threshold", 0.15);
+
+  // Floor detection mode
+  this->declare_parameter<bool>("auto_floor_detection_mode", true);
+  this->declare_parameter<double>("camera_height", 0.80);
 
   // Floor region parameters
   this->declare_parameter<double>("floor_detection_thickness", 0.15);

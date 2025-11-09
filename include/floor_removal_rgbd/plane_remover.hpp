@@ -18,6 +18,10 @@ struct PlaneRemoverParams
   int ransac_max_iterations = 100;
   double floor_normal_z_threshold = 0.15;   // minimum Z component of normal
 
+  // Floor detection mode
+  bool auto_floor_detection_mode = true;    // true: auto-detect using y_max, false: use camera height
+  double camera_height = 0.80;              // meters - camera height from floor (camera frame Y)
+
   // Floor region parameters
   double floor_detection_thickness = 0.15;  // meters - region for RANSAC plane detection
   double floor_removal_thickness = 0.03;    // meters - thickness for actual floor removal
