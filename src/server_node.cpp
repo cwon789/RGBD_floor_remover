@@ -28,6 +28,11 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   params.floor_margin = this->get_parameter("floor_margin").as_double();
   params.use_voxel_grid = this->get_parameter("use_voxel_grid").as_bool();
   params.voxel_leaf_size = this->get_parameter("voxel_leaf_size").as_double();
+  params.enable_stringer_detection = this->get_parameter("enable_stringer_detection").as_bool();
+  params.stringer_width_min = this->get_parameter("stringer_width_min").as_double();
+  params.stringer_width_max = this->get_parameter("stringer_width_max").as_double();
+  params.stringer_height_min = this->get_parameter("stringer_height_min").as_double();
+  params.stringer_height_max = this->get_parameter("stringer_height_max").as_double();
 
   plane_remover_ = std::make_unique<PlaneRemover>(params);
 
@@ -52,6 +57,12 @@ FloorRemovalServerNode::FloorRemovalServerNode()
 
   no_floor_cloud_voxelized_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
     output_no_floor_cloud_voxelized_topic_, 10);
+
+  stringer_markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
+    "/stringer_markers", 10);
+
+  stringer_centers_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
+    "/stringer_centers", 10);
 
   RCLCPP_INFO(this->get_logger(), "Floor Removal Server Node initialized");
   RCLCPP_INFO(this->get_logger(), "  Input: %s", input_cloud_topic_.c_str());
@@ -100,6 +111,13 @@ void FloorRemovalServerNode::declareParameters()
   this->declare_parameter<bool>("use_voxel_grid", true);
   this->declare_parameter<double>("voxel_leaf_size", 0.005);
 
+  // Stringer detection parameters
+  this->declare_parameter<bool>("enable_stringer_detection", true);
+  this->declare_parameter<double>("stringer_width_min", 0.05);
+  this->declare_parameter<double>("stringer_width_max", 0.15);
+  this->declare_parameter<double>("stringer_height_min", 0.08);
+  this->declare_parameter<double>("stringer_height_max", 0.20);
+
   // Legacy parameters (kept for compatibility)
   this->declare_parameter<double>("floor_height_min", -5.0);
   this->declare_parameter<double>("floor_height_max", -0.3);
@@ -143,6 +161,11 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
       RCLCPP_INFO(this->get_logger(),
                   "  Plane: normal=[%.2f, %.2f, %.2f], d=%.3f",
                   result.nx, result.ny, result.nz, result.d);
+      if (!result.detected_stringers.empty()) {
+        RCLCPP_INFO(this->get_logger(),
+                    "  Detected %zu stringers",
+                    result.detected_stringers.size());
+      }
     } else {
       RCLCPP_WARN(this->get_logger(), "No floor plane detected");
     }
@@ -172,6 +195,69 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
   no_floor_cloud_pub_->publish(no_floor_msg);
   floor_cloud_voxelized_pub_->publish(floor_voxelized_msg);
   no_floor_cloud_voxelized_pub_->publish(no_floor_voxelized_msg);
+
+  // Publish stringer centers
+  if (!result.stringer_centers->points.empty()) {
+    sensor_msgs::msg::PointCloud2 stringer_centers_msg;
+    pcl::toROSMsg(*result.stringer_centers, stringer_centers_msg);
+    stringer_centers_msg.header = msg->header;
+    stringer_centers_pub_->publish(stringer_centers_msg);
+  }
+
+  // Publish stringer markers
+  std::cout << "[DEBUG SERVER] Publishing markers for " << result.detected_stringers.size() << " stringers" << std::endl;
+
+  if (!result.detected_stringers.empty()) {
+    visualization_msgs::msg::MarkerArray marker_array;
+
+    for (size_t i = 0; i < result.detected_stringers.size(); ++i) {
+      const auto& bbox = result.detected_stringers[i];
+
+      std::cout << "[DEBUG SERVER] Marker " << i << " at centroid: "
+                << "x=" << bbox.centroid_x << ", "
+                << "y=" << bbox.centroid_y << ", "
+                << "z=" << bbox.centroid_z << std::endl;
+
+      visualization_msgs::msg::Marker marker;
+      marker.header = msg->header;
+      marker.ns = "stringers";
+      marker.id = static_cast<int>(i);
+      marker.type = visualization_msgs::msg::Marker::CUBE;
+      marker.action = visualization_msgs::msg::Marker::ADD;
+
+      // Set position (centroid of actual points, not geometric center)
+      marker.pose.position.x = bbox.centroid_x;
+      marker.pose.position.y = bbox.centroid_y;
+      marker.pose.position.z = bbox.centroid_z;
+      marker.pose.orientation.w = 1.0;
+
+      // Set size
+      marker.scale.x = bbox.width();
+      marker.scale.y = bbox.height();
+      marker.scale.z = bbox.depth();
+
+      // Set color (green with transparency)
+      marker.color.r = 0.0;
+      marker.color.g = 1.0;
+      marker.color.b = 0.0;
+      marker.color.a = 0.5;
+
+      marker.lifetime = rclcpp::Duration::from_seconds(0.5);
+
+      marker_array.markers.push_back(marker);
+    }
+
+    stringer_markers_pub_->publish(marker_array);
+  } else {
+    // Clear previous markers
+    visualization_msgs::msg::MarkerArray marker_array;
+    visualization_msgs::msg::Marker delete_marker;
+    delete_marker.header = msg->header;
+    delete_marker.ns = "stringers";
+    delete_marker.action = visualization_msgs::msg::Marker::DELETEALL;
+    marker_array.markers.push_back(delete_marker);
+    stringer_markers_pub_->publish(marker_array);
+  }
 }
 
 }  // namespace floor_removal_rgbd

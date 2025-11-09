@@ -30,6 +30,36 @@ struct PlaneRemoverParams
   // Voxel grid parameters
   bool use_voxel_grid = true;               // enable voxel grid downsampling
   double voxel_leaf_size = 0.005;           // voxel size (meters)
+
+  // Stringer detection parameters
+  bool enable_stringer_detection = true;    // enable pallet stringer detection
+  double stringer_width_min = 0.05;         // minimum stringer width (meters)
+  double stringer_width_max = 0.15;         // maximum stringer width (meters)
+  double stringer_height_min = 0.08;        // minimum stringer height (meters)
+  double stringer_height_max = 0.20;        // maximum stringer height (meters)
+};
+
+/**
+ * @brief Bounding box for detected object
+ */
+struct BoundingBox
+{
+  double min_x, max_x;
+  double min_y, max_y;
+  double min_z, max_z;
+
+  // Centroid (average of actual points, not geometric center)
+  double centroid_x = 0.0;
+  double centroid_y = 0.0;
+  double centroid_z = 0.0;
+
+  double width() const { return max_x - min_x; }
+  double height() const { return max_y - min_y; }
+  double depth() const { return max_z - min_z; }
+
+  double center_x() const { return (min_x + max_x) / 2.0; }
+  double center_y() const { return (min_y + max_y) / 2.0; }
+  double center_z() const { return (min_z + max_z) / 2.0; }
 };
 
 /**
@@ -41,6 +71,7 @@ struct PlaneRemovalResult
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr no_floor_cloud;
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr floor_cloud_voxelized;
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr no_floor_cloud_voxelized;
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr stringer_centers;
 
   // Plane coefficients: nx*x + ny*y + nz*z + d = 0
   double nx, ny, nz, d;
@@ -52,11 +83,15 @@ struct PlaneRemovalResult
   size_t voxelized_points = 0;
   size_t floor_region_points = 0;
 
+  // Stringer detection results
+  std::vector<BoundingBox> detected_stringers;
+
   PlaneRemovalResult()
     : floor_cloud(new pcl::PointCloud<pcl::PointXYZRGB>)
     , no_floor_cloud(new pcl::PointCloud<pcl::PointXYZRGB>)
     , floor_cloud_voxelized(new pcl::PointCloud<pcl::PointXYZRGB>)
     , no_floor_cloud_voxelized(new pcl::PointCloud<pcl::PointXYZRGB>)
+    , stringer_centers(new pcl::PointCloud<pcl::PointXYZRGB>)
     , nx(0), ny(0), nz(0), d(0)
   {}
 };
@@ -171,6 +206,14 @@ private:
     double nx, double ny, double nz, double d,
     pcl::PointCloud<pcl::PointXYZRGB>::Ptr& floor_cloud,
     pcl::PointCloud<pcl::PointXYZRGB>::Ptr& no_floor_cloud);
+
+  /**
+   * @brief Detect pallet stringers in the no-floor cloud
+   * @param cloud Input cloud (no-floor points)
+   * @return Vector of detected stringer bounding boxes
+   */
+  std::vector<BoundingBox> detectStringers(
+    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud);
 
   PlaneRemoverParams params_;
 };

@@ -5,6 +5,7 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
 
@@ -56,6 +57,8 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr no_floor_cloud_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr floor_cloud_voxelized_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr no_floor_cloud_voxelized_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr stringer_markers_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr stringer_centers_pub_;
 
   // TF2
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
