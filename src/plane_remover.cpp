@@ -85,20 +85,27 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>
   std::cout << "[DEBUG] Floor region points for RANSAC: " << result.floor_region_points << std::endl;
 
   if (floor_region->points.empty()) {
-    std::cout << "[DEBUG] Floor region is empty" << std::endl;
+    std::cout << "[DEBUG] Floor region is empty - returning transformed cloud without floor removal" << std::endl;
+    // Return transformed and voxelized clouds without floor separation
+    result.no_floor_cloud = cloud_filtered;
+    result.no_floor_cloud_voxelized = cloud_voxelized;
     return result;
   }
 
   // Step 5: Detect floor plane using RANSAC on floor region
   double nx, ny, nz, d, inlier_ratio;
   if (!detectFloorPlane(floor_region, nx, ny, nz, d, inlier_ratio)) {
-    std::cout << "[DEBUG] Failed to detect floor plane" << std::endl;
+    std::cout << "[DEBUG] Failed to detect floor plane - returning transformed cloud without floor removal" << std::endl;
+    result.no_floor_cloud = cloud_filtered;
+    result.no_floor_cloud_voxelized = cloud_voxelized;
     return result;
   }
 
-  // Step 5: Validate plane (in robot frame, nz should be significant)
+  // Step 6: Validate plane (in robot frame, nz should be significant)
   if (!isPlaneValid(nz)) {
-    std::cout << "[DEBUG] Plane validation failed (nz=" << nz << ")" << std::endl;
+    std::cout << "[DEBUG] Plane validation failed (nz=" << nz << ") - returning transformed cloud without floor removal" << std::endl;
+    result.no_floor_cloud = cloud_filtered;
+    result.no_floor_cloud_voxelized = cloud_voxelized;
     return result;
   }
 

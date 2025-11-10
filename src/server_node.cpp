@@ -201,10 +201,6 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
     }
   }
 
-  if (!result.plane_found) {
-    return;
-  }
-
   // Convert PCL clouds back to ROS messages
   sensor_msgs::msg::PointCloud2 floor_msg, no_floor_msg;
   sensor_msgs::msg::PointCloud2 floor_voxelized_msg, no_floor_voxelized_msg;
@@ -220,11 +216,16 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
   floor_voxelized_msg.header = msg->header;
   no_floor_voxelized_msg.header = msg->header;
 
-  // Publish
+  // Publish (even if plane not found, transformed clouds will be published)
   floor_cloud_pub_->publish(floor_msg);
   no_floor_cloud_pub_->publish(no_floor_msg);
   floor_cloud_voxelized_pub_->publish(floor_voxelized_msg);
   no_floor_cloud_voxelized_pub_->publish(no_floor_voxelized_msg);
+
+  // Only process stringers if plane was found
+  if (!result.plane_found) {
+    return;
+  }
 
   // Publish stringer centers
   if (!result.stringer_centers->points.empty()) {
