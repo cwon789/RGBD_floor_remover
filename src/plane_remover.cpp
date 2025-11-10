@@ -132,6 +132,8 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>
   if (params_.enable_stringer_detection && stringer_detector_) {
     auto stringer_result = stringer_detector_->detect(result.no_floor_cloud_voxelized);
     result.detected_stringers = stringer_result.detected_stringers;
+    result.detected_planes = stringer_result.detected_planes;
+    result.detected_columns = stringer_result.detected_columns;
     result.stringer_centers = stringer_result.stringer_centers;
   }
 

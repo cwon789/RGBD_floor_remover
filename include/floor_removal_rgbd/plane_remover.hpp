@@ -81,6 +81,8 @@ struct PlaneRemovalResult
 
   // Stringer detection results
   std::vector<BoundingBox> detected_stringers;
+  std::vector<DetectedPlane> detected_planes;
+  std::vector<DetectedColumn> detected_columns;
 
   PlaneRemovalResult()
     : floor_cloud(new pcl::PointCloud<pcl::PointXYZRGB>)

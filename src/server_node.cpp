@@ -235,43 +235,49 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
     stringer_centers_pub_->publish(stringer_centers_msg);
   }
 
-  // Publish stringer markers
-  std::cout << "[DEBUG SERVER] Publishing markers for " << result.detected_stringers.size() << " stringers" << std::endl;
+  // Publish stringer column markers (line segments)
+  std::cout << "[DEBUG SERVER] Publishing line markers for " << result.detected_columns.size() << " column stringers" << std::endl;
 
-  if (!result.detected_stringers.empty()) {
+  if (!result.detected_columns.empty()) {
     visualization_msgs::msg::MarkerArray marker_array;
 
-    for (size_t i = 0; i < result.detected_stringers.size(); ++i) {
-      const auto& bbox = result.detected_stringers[i];
+    for (size_t i = 0; i < result.detected_columns.size(); ++i) {
+      const auto& column = result.detected_columns[i];
 
-      std::cout << "[DEBUG SERVER] Marker " << i << " at centroid: "
-                << "x=" << bbox.centroid_x << ", "
-                << "y=" << bbox.centroid_y << ", "
-                << "z=" << bbox.centroid_z << std::endl;
+      std::cout << "[DEBUG SERVER] Column marker " << i
+                << " from (" << column.start_x << ", " << column.start_y << ", " << column.start_z << ")"
+                << " to (" << column.end_x << ", " << column.end_y << ", " << column.end_z << ")"
+                << " Length=" << column.length << "m" << std::endl;
 
       visualization_msgs::msg::Marker marker;
       marker.header = msg->header;
-      marker.ns = "stringers";
+      marker.ns = "stringer_columns";
       marker.id = static_cast<int>(i);
-      marker.type = visualization_msgs::msg::Marker::CUBE;
+      marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
       marker.action = visualization_msgs::msg::Marker::ADD;
 
-      // Set position (centroid of actual points, not geometric center)
-      marker.pose.position.x = bbox.centroid_x;
-      marker.pose.position.y = bbox.centroid_y;
-      marker.pose.position.z = bbox.centroid_z;
-      marker.pose.orientation.w = 1.0;
+      // Line from start to end
+      geometry_msgs::msg::Point start_point;
+      start_point.x = column.start_x;
+      start_point.y = column.start_y;
+      start_point.z = column.start_z;
 
-      // Set size
-      marker.scale.x = bbox.width();
-      marker.scale.y = bbox.height();
-      marker.scale.z = bbox.depth();
+      geometry_msgs::msg::Point end_point;
+      end_point.x = column.end_x;
+      end_point.y = column.end_y;
+      end_point.z = column.end_z;
 
-      // Set color (green with transparency)
+      marker.points.push_back(start_point);
+      marker.points.push_back(end_point);
+
+      // Line width
+      marker.scale.x = 0.02;  // 2cm thick line
+
+      // Set color (green for detected stringers)
       marker.color.r = 0.0;
       marker.color.g = 1.0;
       marker.color.b = 0.0;
-      marker.color.a = 0.5;
+      marker.color.a = 1.0;
 
       marker.lifetime = rclcpp::Duration::from_seconds(0.5);
 
@@ -284,7 +290,7 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
     visualization_msgs::msg::MarkerArray marker_array;
     visualization_msgs::msg::Marker delete_marker;
     delete_marker.header = msg->header;
-    delete_marker.ns = "stringers";
+    delete_marker.ns = "stringer_columns";
     delete_marker.action = visualization_msgs::msg::Marker::DELETEALL;
     marker_array.markers.push_back(delete_marker);
     stringer_markers_pub_->publish(marker_array);

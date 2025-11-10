@@ -10,7 +10,49 @@ namespace floor_removal_rgbd
 {
 
 /**
- * @brief Bounding box for detected object
+ * @brief Detected line/column (연속된 복셀 그룹)
+ */
+struct DetectedColumn
+{
+  // Start and end points of the column
+  double start_x, start_y, start_z;
+  double end_x, end_y, end_z;
+
+  // Center point (midpoint)
+  double center_x, center_y, center_z;
+
+  // Linear length (Euclidean distance from start to end)
+  double length;
+
+  // Number of points in this column
+  size_t num_points;
+};
+
+/**
+ * @brief Detected plane information
+ */
+struct DetectedPlane
+{
+  // Plane equation: nx*x + ny*y + nz*z + d = 0
+  double nx, ny, nz, d;
+
+  // Plane center (centroid of inlier points)
+  double center_x, center_y, center_z;
+
+  // Plane dimensions
+  double width;   // horizontal extent
+  double height;  // vertical extent
+
+  // Orientation
+  bool is_vertical;   // true if plane is vertical (wall-like)
+  bool is_horizontal; // true if plane is horizontal (floor/ceiling-like)
+
+  // Inlier points
+  size_t num_inliers;
+};
+
+/**
+ * @brief Bounding box for detected object (kept for backward compatibility)
  */
 struct BoundingBox
 {
@@ -38,14 +80,23 @@ struct BoundingBox
 struct StringerDetectorParams
 {
   // Stringer dimension constraints
-  double width_min = 0.05;   // meters - minimum stringer width
-  double width_max = 0.15;   // meters - maximum stringer width
-  double height_min = 0.08;  // meters - minimum stringer height
-  double height_max = 0.20;  // meters - maximum stringer height
+  double width_min = 0.05;   // meters - minimum stringer width (horizontal)
+  double width_max = 0.15;   // meters - maximum stringer width (horizontal)
+  double height_min = 0.08;  // meters - minimum stringer height (vertical)
+  double height_max = 0.20;  // meters - maximum stringer height (vertical)
+
+  // Plane detection parameters
+  double ransac_distance_threshold = 0.02;  // meters - RANSAC distance threshold
+  int ransac_max_iterations = 100;          // RANSAC max iterations
+  int min_plane_inliers = 10;               // minimum inliers for valid plane
+
+  // Orientation thresholds (for determining vertical/horizontal)
+  double vertical_normal_threshold = 0.8;   // |nx| or |ny| > this → vertical plane
+  double horizontal_normal_threshold = 0.8; // |nz| > this → horizontal plane
 
   // Clustering parameters
   double cluster_tolerance = 0.08;  // meters - Euclidean distance tolerance for clustering
-  int min_cluster_size = 5;         // minimum points per cluster
+  int min_cluster_size = 10;        // minimum points per cluster
   int max_cluster_size = 10000;     // maximum points per cluster
 
   // Downsampling parameters
@@ -59,7 +110,9 @@ struct StringerDetectorParams
  */
 struct StringerDetectionResult
 {
-  std::vector<BoundingBox> detected_stringers;
+  std::vector<BoundingBox> detected_stringers;  // For backward compatibility
+  std::vector<DetectedPlane> detected_planes;   // Plane-based detection
+  std::vector<DetectedColumn> detected_columns; // New: voxel connectivity-based detection
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr stringer_centers;
 
   StringerDetectionResult()
@@ -135,6 +188,61 @@ private:
    * @return True if dimensions match stringer criteria
    */
   bool matchesStringerCriteria(const BoundingBox& bbox);
+
+  /**
+   * @brief Detect planes in a cluster using RANSAC
+   * @param cloud Input cloud
+   * @param indices Point indices belonging to the cluster
+   * @return Detected planes with vertical and horizontal orientation
+   */
+  std::vector<DetectedPlane> detectPlanesInCluster(
+    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+    const pcl::PointIndices& indices);
+
+  /**
+   * @brief Compute plane dimensions and centroid from inlier points
+   * @param cloud Input cloud
+   * @param indices Inlier point indices
+   * @param plane Plane to update with dimensions and centroid
+   */
+  void computePlaneDimensions(
+    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+    const std::vector<int>& indices,
+    DetectedPlane& plane);
+
+  /**
+   * @brief Check if plane matches stringer criteria
+   * @param plane Detected plane
+   * @return True if plane matches vertical and horizontal dimension criteria
+   */
+  bool matchesStringerPlaneCriteria(const DetectedPlane& plane);
+
+  /**
+   * @brief Detect columns in a cluster based on voxel connectivity
+   * @param cloud Input cloud
+   * @param indices Point indices belonging to the cluster
+   * @return Detected columns (continuous voxel groups)
+   */
+  std::vector<DetectedColumn> detectColumnsInCluster(
+    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+    const pcl::PointIndices& indices);
+
+  /**
+   * @brief Compute linear length of a point group
+   * @param cloud Input cloud
+   * @param indices Point indices
+   * @return DetectedColumn with start, end, center, and length
+   */
+  DetectedColumn computeColumnLength(
+    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+    const std::vector<int>& indices);
+
+  /**
+   * @brief Check if column length matches stringer criteria
+   * @param column Detected column
+   * @return True if length is within width_min ~ width_max
+   */
+  bool matchesStringerColumnCriteria(const DetectedColumn& column);
 
   StringerDetectorParams params_;
 };
