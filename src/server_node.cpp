@@ -28,6 +28,7 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   params.floor_margin = this->get_parameter("floor_margin").as_double();
   params.use_voxel_grid = this->get_parameter("use_voxel_grid").as_bool();
   params.voxel_leaf_size = this->get_parameter("voxel_leaf_size").as_double();
+  params.max_detection_distance = this->get_parameter("max_detection_distance").as_double();
   params.enable_stringer_detection = this->get_parameter("enable_stringer_detection").as_bool();
   params.stringer_width_min = this->get_parameter("stringer_width_min").as_double();
   params.stringer_width_max = this->get_parameter("stringer_width_max").as_double();
@@ -127,6 +128,9 @@ void FloorRemovalServerNode::declareParameters()
   // Voxel grid parameters
   this->declare_parameter<bool>("use_voxel_grid", true);
   this->declare_parameter<double>("voxel_leaf_size", 0.005);
+
+  // Detection range parameters
+  this->declare_parameter<double>("max_detection_distance", 10.0);
 
   // Stringer detection parameters
   this->declare_parameter<bool>("enable_stringer_detection", true);

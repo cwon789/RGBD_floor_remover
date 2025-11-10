@@ -25,14 +25,17 @@ floor_removal_node:
                                      # Large enough to get sufficient points after voxelization
     floor_removal_thickness: 0.03    # meters - thickness for actual floor removal (3cm)
                                      # Small to preserve objects on floor (e.g., 10cm pallets)
-    floor_margin: 0.02               # additional margin around detected floor plane (meters)
+    floor_margin: 0.00               # additional margin around detected floor plane (meters)
 
     # Voxel grid downsampling (reduces computation and noise)
     use_voxel_grid: true             # enable voxel grid downsampling
     voxel_leaf_size: 0.03            # voxel size (meters) - 1cm, reduces ~100k to ~10-15k points
 
+    # Detection range parameters
+    max_detection_distance: 2.0     # maximum detection distance from camera (meters)
+
     # Pallet stringer detection
-    enable_stringer_detection: true  # enable pallet stringer detection
+    enable_stringer_detection: false  # enable pallet stringer detection
     stringer_width_min: 0.05         # minimum stringer width (meters) - 5cm
     stringer_width_max: 0.1         # maximum stringer width (meters) - 15cm
     stringer_height_min: 0.1        # minimum stringer height (meters) - 8cm
@@ -54,5 +57,5 @@ floor_removal_node:
 
     # Rotation: Euler angles in robot base frame (radians) - ZYX order
     cam_roll: 0.0                    # rotation around X axis (radians)
-    cam_pitch: 0.174533                   # rotation around Y axis (radians)
+    cam_pitch: 0.2356194                 # rotation around Y axis (radians)
     cam_yaw: 0.0                     # rotation around Z axis (radians)

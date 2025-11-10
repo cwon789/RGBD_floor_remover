@@ -53,20 +53,26 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>
   auto cloud_robot = transformToStandardFrame(cloud_camera);
   std::cout << "[DEBUG] Transformed cloud size: " << cloud_robot->points.size() << std::endl;
 
-  // Step 2: Apply voxel grid downsampling if enabled (work in robot frame)
-  auto cloud_for_processing = cloud_robot;
+  // Step 2: Filter by max detection distance (in robot frame, X=forward is depth)
+  auto cloud_filtered = filterByDistance(cloud_robot);
+  std::cout << "[DEBUG] Filtered cloud size (within " << params_.max_detection_distance
+            << "m): " << cloud_filtered->points.size() << std::endl;
+
+  // Step 3: Apply voxel grid downsampling if enabled (work in robot frame)
+  auto cloud_voxelized = cloud_filtered;
   if (params_.use_voxel_grid) {
-    cloud_for_processing = applyVoxelGrid(cloud_robot);
-    result.voxelized_points = cloud_for_processing->points.size();
+    cloud_voxelized = applyVoxelGrid(cloud_filtered);
+    result.voxelized_points = cloud_voxelized->points.size();
+    std::cout << "[DEBUG] Voxelized cloud size: " << result.voxelized_points << std::endl;
   } else {
-    result.voxelized_points = cloud_robot->points.size();
+    result.voxelized_points = cloud_filtered->points.size();
   }
 
-  // Step 3: Determine floor height based on mode
+  // Step 4: Extract floor region for RANSAC (based on Z height)
   double min_z;
   if (params_.auto_floor_detection_mode) {
     // Auto mode: Find minimum Z (robot frame: Z=up, so min Z = floor)
-    min_z = findMinZ(cloud_for_processing);
+    min_z = findMinZ(cloud_voxelized);
     std::cout << "[DEBUG] Auto mode - min_z: " << min_z << std::endl;
   } else {
     // Fixed mode: Use configured floor height
@@ -74,23 +80,25 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>
     std::cout << "[DEBUG] Fixed mode - floor_height: " << min_z << std::endl;
   }
 
-  // Step 4: Extract floor region (points near minimum Z in robot frame)
-  auto floor_region = extractFloorRegionRobotFrame(cloud_for_processing, min_z);
+  auto floor_region = extractFloorRegion(cloud_voxelized, min_z);
   result.floor_region_points = floor_region->points.size();
-  std::cout << "[DEBUG] Floor region points: " << result.floor_region_points << std::endl;
+  std::cout << "[DEBUG] Floor region points for RANSAC: " << result.floor_region_points << std::endl;
 
   if (floor_region->points.empty()) {
+    std::cout << "[DEBUG] Floor region is empty" << std::endl;
     return result;
   }
 
-  // Step 5: Detect floor plane using RANSAC
+  // Step 5: Detect floor plane using RANSAC on floor region
   double nx, ny, nz, d, inlier_ratio;
   if (!detectFloorPlane(floor_region, nx, ny, nz, d, inlier_ratio)) {
+    std::cout << "[DEBUG] Failed to detect floor plane" << std::endl;
     return result;
   }
 
-  // Step 6: Validate plane (in robot frame, nz should be significant)
+  // Step 5: Validate plane (in robot frame, nz should be significant)
   if (!isPlaneValid(nz)) {
+    std::cout << "[DEBUG] Plane validation failed (nz=" << nz << ")" << std::endl;
     return result;
   }
 
@@ -99,15 +107,21 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>
   result.ny = ny;
   result.nz = nz;
   result.d = d;
+  std::cout << "[DEBUG] Floor plane found: nx=" << nx << ", ny=" << ny
+            << ", nz=" << nz << ", d=" << d << std::endl;
 
-  // Step 7: Classify all points in robot frame cloud
-  classifyPoints(cloud_robot, nx, ny, nz, d, result.floor_cloud, result.no_floor_cloud);
+  // Step 6: Remove points below the plane (floor removal)
+  // In robot frame Z=up, so points below plane have negative signed distance
+  removePointsBelowPlane(cloud_filtered, nx, ny, nz, d, result.floor_cloud, result.no_floor_cloud);
   result.floor_points = result.floor_cloud->points.size();
+  std::cout << "[DEBUG] Floor points: " << result.floor_points
+            << ", No-floor points: " << result.no_floor_cloud->points.size() << std::endl;
 
-  // Step 8: Classify voxelized cloud
-  classifyPoints(cloud_for_processing, nx, ny, nz, d, result.floor_cloud_voxelized, result.no_floor_cloud_voxelized);
+  // Step 7: Classify voxelized cloud for visualization
+  removePointsBelowPlane(cloud_voxelized, nx, ny, nz, d,
+                         result.floor_cloud_voxelized, result.no_floor_cloud_voxelized);
 
-  // Step 6: Detect stringers in the no-floor cloud (voxelized for efficiency)
+  // Step 8: Detect stringers in the no-floor cloud (voxelized for efficiency)
   if (params_.enable_stringer_detection && stringer_detector_) {
     auto stringer_result = stringer_detector_->detect(result.no_floor_cloud_voxelized);
     result.detected_stringers = stringer_result.detected_stringers;
@@ -203,6 +217,31 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::applyVoxelGrid(
   return cloud_downsampled;
 }
 
+pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::filterByDistance(
+  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud)
+{
+  // Filter points by distance from camera origin
+  // In robot frame: X=forward (depth), so distance = sqrt(x^2 + y^2 + z^2)
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZRGB>);
+  cloud_filtered->header = cloud->header;
+  cloud_filtered->points.reserve(cloud->points.size());
+
+  double max_dist_sq = params_.max_detection_distance * params_.max_detection_distance;
+
+  for (const auto& point : cloud->points) {
+    double dist_sq = point.x * point.x + point.y * point.y + point.z * point.z;
+    if (dist_sq <= max_dist_sq) {
+      cloud_filtered->points.push_back(point);
+    }
+  }
+
+  cloud_filtered->width = cloud_filtered->points.size();
+  cloud_filtered->height = 1;
+  cloud_filtered->is_dense = false;
+
+  return cloud_filtered;
+}
+
 double PlaneRemover::findMinZ(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud)
 {
   // Find minimum Z (robot frame: Z=up, so min Z = lowest point = floor)
@@ -214,7 +253,7 @@ double PlaneRemover::findMinZ(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& clou
   return min_z;
 }
 
-pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::extractFloorRegionRobotFrame(
+pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::extractFloorRegion(
   const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, double min_z)
 {
   // Robot frame: Z=up, so floor is near min Z
@@ -236,15 +275,15 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::extractFloorRegionRobotFram
 }
 
 bool PlaneRemover::detectFloorPlane(
-  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& floor_region,
+  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
   double& nx, double& ny, double& nz, double& d, double& inlier_ratio)
 {
-  // Need at least 3 points for RANSAC
-  if (floor_region->points.size() < 10) {
+  // Need at least 10 points for RANSAC
+  if (cloud->points.size() < 10) {
     return false;
   }
 
-  // Run RANSAC to detect floor plane
+  // Run RANSAC to detect floor plane on entire voxelized cloud
   pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients);
   pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
 
@@ -254,7 +293,7 @@ bool PlaneRemover::detectFloorPlane(
   seg.setMethodType(pcl::SAC_RANSAC);
   seg.setMaxIterations(params_.ransac_max_iterations);
   seg.setDistanceThreshold(params_.ransac_distance_threshold);
-  seg.setInputCloud(floor_region);
+  seg.setInputCloud(cloud);
   seg.segment(*inliers, *coefficients);
 
   if (inliers->indices.empty() || coefficients->values.size() != 4) {
@@ -268,7 +307,7 @@ bool PlaneRemover::detectFloorPlane(
   d = coefficients->values[3];
 
   // Calculate inlier ratio
-  inlier_ratio = static_cast<double>(inliers->indices.size()) / floor_region->points.size();
+  inlier_ratio = static_cast<double>(inliers->indices.size()) / cloud->points.size();
 
   return true;
 }
@@ -285,21 +324,27 @@ bool PlaneRemover::isPlaneValid(double nz)
   return true;
 }
 
-void PlaneRemover::classifyPoints(
+void PlaneRemover::removePointsBelowPlane(
   const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
   double nx, double ny, double nz, double d,
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr& floor_cloud,
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr& no_floor_cloud)
 {
-  // Use REMOVAL thickness (thin) to preserve objects on floor like pallets
+  // Remove points below the plane (floor removal)
+  // In robot frame (Z=up), floor normal points upward (nz > 0)
+  // Signed distance = nx*x + ny*y + nz*z + d
+  // Negative distance = below plane, Positive distance = above plane
+
+  // Use REMOVAL thickness to define floor region
   double threshold = params_.floor_removal_thickness / 2.0 + params_.floor_margin;
 
   for (const auto& point : cloud->points) {
-    // Calculate signed distance from point to plane: nx*x + ny*y + nz*z + d
+    // Calculate signed distance from point to plane
     double signed_distance = nx * point.x + ny * point.y + nz * point.z + d;
 
-    // Only mark points ON or BELOW the floor (within thin layer)
-    if (signed_distance >= -threshold && signed_distance <= threshold) {
+    // Points AT or BELOW the plane are considered floor
+    // Since normal points up, negative distance means below plane
+    if (signed_distance <= threshold) {
       floor_cloud->points.push_back(point);
     } else {
       no_floor_cloud->points.push_back(point);
