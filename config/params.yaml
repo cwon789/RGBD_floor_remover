@@ -25,7 +25,7 @@ floor_removal_node:
                                      # Large enough to get sufficient points after voxelization
     floor_removal_thickness: 0.03    # meters - thickness for actual floor removal (3cm)
                                      # Small to preserve objects on floor (e.g., 10cm pallets)
-    floor_margin: 0.00               # additional margin around detected floor plane (meters)
+    floor_margin: 0.0               # additional margin around detected floor plane (meters)
 
     # Voxel grid downsampling (reduces computation and noise)
     use_voxel_grid: true             # enable voxel grid downsampling
