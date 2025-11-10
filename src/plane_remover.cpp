@@ -135,6 +135,7 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>
     result.detected_planes = stringer_result.detected_planes;
     result.detected_columns = stringer_result.detected_columns;
     result.stringer_centers = stringer_result.stringer_centers;
+    result.intersection_points = stringer_result.intersection_points;
   }
 
   return result;

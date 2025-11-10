@@ -49,34 +49,102 @@ StringerDetectionResult StringerDetector::detect(const pcl::PointCloud<pcl::Poin
     }
 
     // Detect columns (linear segments) in this cluster
+    // detectColumnsInCluster already filters by criteria
     auto columns = detectColumnsInCluster(cloud_for_clustering, indices);
 
-    // Check each detected column
+    // Track horizontal and vertical components in this cluster
+    const DetectedColumn* horizontal_col = nullptr;
+    const DetectedColumn* vertical_col = nullptr;
+
+    // Add all detected columns (already filtered)
     for (const auto& column : columns) {
-      if (matchesStringerColumnCriteria(column)) {
-        std::cout << "[StringerDetector] ✓ Stringer column detected: "
-                  << "Length=" << column.length << "m, "
-                  << "Points=" << column.num_points << std::endl;
+      std::cout << "[StringerDetector] ✓ Stringer column detected: "
+                << (column.is_horizontal ? "[HORIZONTAL] " : "[VERTICAL] ")
+                << "Length=" << column.length << "m, "
+                << "Height=" << column.height << "m, "
+                << "Points=" << column.num_points << std::endl;
 
-        result.detected_columns.push_back(column);
+      result.detected_columns.push_back(column);
 
-        // Add center point
-        pcl::PointXYZRGB center;
-        center.x = column.center_x;
-        center.y = column.center_y;
-        center.z = column.center_z;
-        center.r = 255;
-        center.g = 0;
-        center.b = 0;  // Red for columns
-        result.stringer_centers->points.push_back(center);
-
-        // For backward compatibility, create a bounding box
-        BoundingBox bbox;
-        bbox.centroid_x = column.center_x;
-        bbox.centroid_y = column.center_y;
-        bbox.centroid_z = column.center_z;
-        result.detected_stringers.push_back(bbox);
+      // Track which components this cluster has
+      if (column.is_horizontal) {
+        horizontal_col = &result.detected_columns.back();
       }
+      if (column.is_vertical) {
+        vertical_col = &result.detected_columns.back();
+      }
+
+      // Add center point
+      pcl::PointXYZRGB center;
+      center.x = column.center_x;
+      center.y = column.center_y;
+      center.z = column.center_z;
+      if (column.is_horizontal) {
+        center.r = 0;
+        center.g = 255;
+        center.b = 0;  // Green for horizontal
+      } else {
+        center.r = 0;
+        center.g = 0;
+        center.b = 255;  // Blue for vertical
+      }
+      result.stringer_centers->points.push_back(center);
+
+      // For backward compatibility, create a bounding box
+      BoundingBox bbox;
+      bbox.centroid_x = column.center_x;
+      bbox.centroid_y = column.center_y;
+      bbox.centroid_z = column.center_z;
+      result.detected_stringers.push_back(bbox);
+    }
+
+    // Step 3.5: Determine intersection point for this cluster
+    pcl::PointXYZRGB intersection_point;
+
+    if (horizontal_col && vertical_col) {
+      // Both horizontal and vertical detected - use intersection point
+      intersection_point.x = (horizontal_col->center_x + vertical_col->center_x) / 2.0;
+      intersection_point.y = (horizontal_col->center_y + vertical_col->center_y) / 2.0;
+      intersection_point.z = (horizontal_col->center_z + vertical_col->center_z) / 2.0;
+      intersection_point.r = 255;
+      intersection_point.g = 255;
+      intersection_point.b = 0;  // Yellow for intersections
+
+      result.intersection_points->points.push_back(intersection_point);
+
+      std::cout << "[StringerDetector] ✓ Intersection (both H+V) at ("
+                << intersection_point.x << ", " << intersection_point.y << ", "
+                << intersection_point.z << ")" << std::endl;
+    }
+    else if (horizontal_col) {
+      // Only horizontal detected - use its center
+      intersection_point.x = horizontal_col->center_x;
+      intersection_point.y = horizontal_col->center_y;
+      intersection_point.z = horizontal_col->center_z;
+      intersection_point.r = 0;
+      intersection_point.g = 255;
+      intersection_point.b = 0;  // Green for horizontal-only
+
+      result.intersection_points->points.push_back(intersection_point);
+
+      std::cout << "[StringerDetector] ✓ Center point (H-only) at ("
+                << intersection_point.x << ", " << intersection_point.y << ", "
+                << intersection_point.z << ")" << std::endl;
+    }
+    else if (vertical_col) {
+      // Only vertical detected - use its center
+      intersection_point.x = vertical_col->center_x;
+      intersection_point.y = vertical_col->center_y;
+      intersection_point.z = vertical_col->center_z;
+      intersection_point.r = 0;
+      intersection_point.g = 0;
+      intersection_point.b = 255;  // Blue for vertical-only
+
+      result.intersection_points->points.push_back(intersection_point);
+
+      std::cout << "[StringerDetector] ✓ Center point (V-only) at ("
+                << intersection_point.x << ", " << intersection_point.y << ", "
+                << intersection_point.z << ")" << std::endl;
     }
   }
 
@@ -84,7 +152,12 @@ StringerDetectionResult StringerDetector::detect(const pcl::PointCloud<pcl::Poin
   result.stringer_centers->height = 1;
   result.stringer_centers->is_dense = false;
 
+  result.intersection_points->width = result.intersection_points->points.size();
+  result.intersection_points->height = 1;
+  result.intersection_points->is_dense = false;
+
   std::cout << "[StringerDetector] Total stringers detected: " << result.detected_stringers.size() << std::endl;
+  std::cout << "[StringerDetector] Total intersections found: " << result.intersection_points->points.size() << std::endl;
 
   return result;
 }
@@ -349,11 +422,47 @@ std::vector<DetectedColumn> StringerDetector::detectColumnsInCluster(
 {
   std::vector<DetectedColumn> columns;
 
-  // For now, treat the entire cluster as a single column
-  // (More sophisticated segmentation can be added later)
-  if (!indices.indices.empty()) {
-    DetectedColumn column = computeColumnLength(cloud, indices.indices);
-    columns.push_back(column);
+  if (indices.indices.empty()) {
+    return columns;
+  }
+
+  // Compute column properties (checks both horizontal and vertical)
+  DetectedColumn column = computeColumnLength(cloud, indices.indices);
+
+  std::cout << "[StringerDetector] Cluster analysis: "
+            << "H-Length=" << column.length << "m, "
+            << "V-Height=" << column.height << "m" << std::endl;
+
+  // Check if horizontal component matches
+  if (column.is_horizontal) {
+    std::cout << "[StringerDetector] ✓ Has valid HORIZONTAL component" << std::endl;
+  }
+
+  // Check if vertical component matches
+  if (column.is_vertical) {
+    std::cout << "[StringerDetector] ✓ Has valid VERTICAL component" << std::endl;
+  }
+
+  // Add horizontal line if valid
+  if (column.is_horizontal) {
+    DetectedColumn h_column = column;
+    h_column.is_vertical = false;  // Mark as horizontal-only
+    columns.push_back(h_column);
+  }
+
+  // Add vertical line if valid
+  if (column.is_vertical) {
+    DetectedColumn v_column = column;
+    v_column.is_horizontal = false;  // Mark as vertical-only
+    // For vertical, update start/end to be Z-aligned
+    v_column.start_x = column.center_x;
+    v_column.start_y = column.center_y;
+    v_column.start_z = column.center_z - column.height / 2.0;
+    v_column.end_x = column.center_x;
+    v_column.end_y = column.center_y;
+    v_column.end_z = column.center_z + column.height / 2.0;
+    v_column.length = column.height;  // For vertical, length = height
+    columns.push_back(v_column);
   }
 
   return columns;
@@ -447,31 +556,58 @@ DetectedColumn StringerDetector::computeColumnLength(
   const auto& start_pt = cluster_cloud->points[idx_min];
   const auto& end_pt = cluster_cloud->points[idx_max];
 
-  // Align the line to the axis by keeping one coordinate constant
-  // Use the centroid as reference
+  // Compute height (Z direction) - vertical extent
+  double min_z = 1e6;
+  double max_z = -1e6;
+  for (const auto& pt : cluster_cloud->points) {
+    min_z = std::min(min_z, static_cast<double>(pt.z));
+    max_z = std::max(max_z, static_cast<double>(pt.z));
+  }
+  column.height = max_z - min_z;
+
+  // Determine if this is horizontal or vertical line
+  // Horizontal: X or Y axis aligned (length in X-Y plane)
+  // Vertical: Z axis aligned (length in Z direction)
+
+  // Compare horizontal extent vs vertical extent
   if (abs_x > abs_y) {
-    // X-aligned: keep Y constant at centroid Y
-    column.start_x = start_pt.x;
-    column.start_y = centroid[1];  // Fixed Y
-    column.start_z = centroid[2];  // Use average Z
-
-    column.end_x = end_pt.x;
-    column.end_y = centroid[1];    // Fixed Y
-    column.end_z = centroid[2];    // Use average Z
-
+    // X-direction dominates
     column.length = std::abs(end_pt.x - start_pt.x);
   } else {
-    // Y-aligned: keep X constant at centroid X
-    column.start_x = centroid[0];  // Fixed X
-    column.start_y = start_pt.y;
-    column.start_z = centroid[2];  // Use average Z
-
-    column.end_x = centroid[0];    // Fixed X
-    column.end_y = end_pt.y;
-    column.end_z = centroid[2];    // Use average Z
-
+    // Y-direction dominates
     column.length = std::abs(end_pt.y - start_pt.y);
   }
+
+  // Check both horizontal and vertical components
+  // A cluster can have BOTH horizontal extent AND vertical extent
+  // We'll use the dominant direction for visualization, but mark both
+
+  // Default: use horizontal alignment for start/end points
+  if (abs_x > abs_y) {
+    // X-aligned
+    column.start_x = start_pt.x;
+    column.start_y = centroid[1];
+    column.start_z = centroid[2];
+    column.end_x = end_pt.x;
+    column.end_y = centroid[1];
+    column.end_z = centroid[2];
+  } else {
+    // Y-aligned
+    column.start_x = centroid[0];
+    column.start_y = start_pt.y;
+    column.start_z = centroid[2];
+    column.end_x = centroid[0];
+    column.end_y = end_pt.y;
+    column.end_z = centroid[2];
+  }
+
+  // Mark if this cluster has significant horizontal extent
+  column.is_horizontal = (column.length >= params_.width_min &&
+                          column.length <= params_.width_max);
+
+  // Mark if this cluster has significant vertical extent
+  column.is_vertical = (column.height >= params_.height_min &&
+                        column.height <= params_.height_max);
 
   // Compute center (centroid of all points)
   column.center_x = centroid[0];
@@ -483,20 +619,56 @@ DetectedColumn StringerDetector::computeColumnLength(
 
 bool StringerDetector::matchesStringerColumnCriteria(const DetectedColumn& column)
 {
-  // Check if length is within stringer width range
+  // This is the old combined function - deprecated
+  // Use matchesHorizontalCriteria or matchesVerticalCriteria instead
+  if (column.is_horizontal) {
+    return matchesHorizontalCriteria(column);
+  } else if (column.is_vertical) {
+    return matchesVerticalCriteria(column);
+  }
+  return false;
+}
+
+bool StringerDetector::matchesHorizontalCriteria(const DetectedColumn& column)
+{
+  // For horizontal lines: check width (length in X-Y plane)
   bool length_ok = (column.length >= params_.width_min &&
                     column.length <= params_.width_max);
 
   if (length_ok) {
-    return true;
+    std::cout << "[StringerDetector] ✓ Horizontal line ACCEPTED: "
+              << "Length=" << column.length << "m ("
+              << params_.width_min << "-" << params_.width_max << ")"
+              << std::endl;
+  } else {
+    std::cout << "[StringerDetector] ✗ Horizontal line REJECTED: "
+              << "Length=" << column.length << "m ("
+              << params_.width_min << "-" << params_.width_max << ")"
+              << std::endl;
   }
 
-  std::cout << "[StringerDetector] ✗ Rejected column: "
-            << "Length=" << column.length << "m ("
-            << params_.width_min << "-" << params_.width_max << "), "
-            << "Points=" << column.num_points << std::endl;
+  return length_ok;
+}
 
-  return false;
+bool StringerDetector::matchesVerticalCriteria(const DetectedColumn& column)
+{
+  // For vertical lines: check height (length in Z direction)
+  bool height_ok = (column.length >= params_.height_min &&
+                    column.length <= params_.height_max);
+
+  if (height_ok) {
+    std::cout << "[StringerDetector] ✓ Vertical line ACCEPTED: "
+              << "Height=" << column.length << "m ("
+              << params_.height_min << "-" << params_.height_max << ")"
+              << std::endl;
+  } else {
+    std::cout << "[StringerDetector] ✗ Vertical line REJECTED: "
+              << "Height=" << column.length << "m ("
+              << params_.height_min << "-" << params_.height_max << ")"
+              << std::endl;
+  }
+
+  return height_ok;
 }
 
 }  // namespace floor_removal_rgbd

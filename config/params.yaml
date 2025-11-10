@@ -36,7 +36,7 @@ floor_removal_node:
 
     # Pallet stringer detection
     enable_stringer_detection: true  # enable pallet stringer detection
-    stringer_width_min: 0.08         # minimum stringer width (meters) - 5cm
+    stringer_width_min: 0.05         # minimum stringer width (meters) - 5cm
     stringer_width_max: 0.1         # maximum stringer width (meters) - 15cm
     stringer_height_min: 0.1        # minimum stringer height (meters) - 8cm
     stringer_height_max: 0.2        # maximum stringer height (meters) - 20cm

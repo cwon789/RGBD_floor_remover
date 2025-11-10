@@ -74,6 +74,9 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   stringer_centers_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
     "/stringer_centers", 10);
 
+  intersection_points_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
+    "/intersection_points", 10);
+
   RCLCPP_INFO(this->get_logger(), "Floor Removal Server Node initialized");
   RCLCPP_INFO(this->get_logger(), "  Input: %s", input_cloud_topic_.c_str());
   RCLCPP_INFO(this->get_logger(), "  Output floor: %s", output_floor_cloud_topic_.c_str());
@@ -235,64 +238,90 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
     stringer_centers_pub_->publish(stringer_centers_msg);
   }
 
-  // Publish stringer column markers (line segments)
+  // Publish intersection points
+  if (!result.intersection_points->points.empty()) {
+    sensor_msgs::msg::PointCloud2 intersection_points_msg;
+    pcl::toROSMsg(*result.intersection_points, intersection_points_msg);
+    intersection_points_msg.header = msg->header;
+    intersection_points_pub_->publish(intersection_points_msg);
+  }
+
+  // Publish stringer column markers - separate horizontal and vertical
   std::cout << "[DEBUG SERVER] Publishing line markers for " << result.detected_columns.size() << " column stringers" << std::endl;
 
-  if (!result.detected_columns.empty()) {
-    visualization_msgs::msg::MarkerArray marker_array;
+  visualization_msgs::msg::MarkerArray marker_array;
+  int horizontal_count = 0;
+  int vertical_count = 0;
 
-    for (size_t i = 0; i < result.detected_columns.size(); ++i) {
-      const auto& column = result.detected_columns[i];
+  for (size_t i = 0; i < result.detected_columns.size(); ++i) {
+    const auto& column = result.detected_columns[i];
 
-      std::cout << "[DEBUG SERVER] Column marker " << i
-                << " from (" << column.start_x << ", " << column.start_y << ", " << column.start_z << ")"
-                << " to (" << column.end_x << ", " << column.end_y << ", " << column.end_z << ")"
-                << " Length=" << column.length << "m" << std::endl;
+    std::cout << "[DEBUG SERVER] Column marker " << i
+              << (column.is_horizontal ? " [HORIZONTAL]" : " [VERTICAL]")
+              << " from (" << column.start_x << ", " << column.start_y << ", " << column.start_z << ")"
+              << " to (" << column.end_x << ", " << column.end_y << ", " << column.end_z << ")"
+              << " Length=" << column.length << "m" << std::endl;
 
-      visualization_msgs::msg::Marker marker;
-      marker.header = msg->header;
-      marker.ns = "stringer_columns";
-      marker.id = static_cast<int>(i);
-      marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
-      marker.action = visualization_msgs::msg::Marker::ADD;
+    visualization_msgs::msg::Marker marker;
+    marker.header = msg->header;
+    marker.id = static_cast<int>(i);
+    marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+    marker.action = visualization_msgs::msg::Marker::ADD;
 
-      // Line from start to end
-      geometry_msgs::msg::Point start_point;
-      start_point.x = column.start_x;
-      start_point.y = column.start_y;
-      start_point.z = column.start_z;
+    // Line from start to end
+    geometry_msgs::msg::Point start_point;
+    start_point.x = column.start_x;
+    start_point.y = column.start_y;
+    start_point.z = column.start_z;
 
-      geometry_msgs::msg::Point end_point;
-      end_point.x = column.end_x;
-      end_point.y = column.end_y;
-      end_point.z = column.end_z;
+    geometry_msgs::msg::Point end_point;
+    end_point.x = column.end_x;
+    end_point.y = column.end_y;
+    end_point.z = column.end_z;
 
-      marker.points.push_back(start_point);
-      marker.points.push_back(end_point);
+    marker.points.push_back(start_point);
+    marker.points.push_back(end_point);
 
-      // Line width
-      marker.scale.x = 0.02;  // 2cm thick line
+    // Line width
+    marker.scale.x = 0.005;  // 5mm thick line
 
-      // Set color (green for detected stringers)
+    if (column.is_horizontal) {
+      // Horizontal line - green
+      marker.ns = "horizontal_stringers";
       marker.color.r = 0.0;
       marker.color.g = 1.0;
       marker.color.b = 0.0;
       marker.color.a = 1.0;
-
-      marker.lifetime = rclcpp::Duration::from_seconds(0.5);
-
-      marker_array.markers.push_back(marker);
+      horizontal_count++;
+    } else {
+      // Vertical line - blue
+      marker.ns = "vertical_stringers";
+      marker.color.r = 0.0;
+      marker.color.g = 0.0;
+      marker.color.b = 1.0;
+      marker.color.a = 1.0;
+      vertical_count++;
     }
 
+    marker.lifetime = rclcpp::Duration::from_seconds(0.5);
+    marker_array.markers.push_back(marker);
+  }
+
+  std::cout << "[DEBUG SERVER] Horizontal: " << horizontal_count << ", Vertical: " << vertical_count << std::endl;
+
+  if (!marker_array.markers.empty()) {
     stringer_markers_pub_->publish(marker_array);
   } else {
     // Clear previous markers
-    visualization_msgs::msg::MarkerArray marker_array;
-    visualization_msgs::msg::Marker delete_marker;
-    delete_marker.header = msg->header;
-    delete_marker.ns = "stringer_columns";
-    delete_marker.action = visualization_msgs::msg::Marker::DELETEALL;
-    marker_array.markers.push_back(delete_marker);
+    visualization_msgs::msg::Marker delete_h, delete_v;
+    delete_h.header = msg->header;
+    delete_h.ns = "horizontal_stringers";
+    delete_h.action = visualization_msgs::msg::Marker::DELETEALL;
+    delete_v.header = msg->header;
+    delete_v.ns = "vertical_stringers";
+    delete_v.action = visualization_msgs::msg::Marker::DELETEALL;
+    marker_array.markers.push_back(delete_h);
+    marker_array.markers.push_back(delete_v);
     stringer_markers_pub_->publish(marker_array);
   }
 }

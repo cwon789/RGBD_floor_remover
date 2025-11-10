@@ -21,8 +21,13 @@ struct DetectedColumn
   // Center point (midpoint)
   double center_x, center_y, center_z;
 
-  // Linear length (Euclidean distance from start to end)
-  double length;
+  // Dimensions
+  double length;  // Horizontal length (X-Y plane) or vertical length
+  double height;  // Vertical height (Z direction)
+
+  // Orientation
+  bool is_horizontal;  // true if horizontal line (X or Y direction)
+  bool is_vertical;    // true if vertical line (Z direction)
 
   // Number of points in this column
   size_t num_points;
@@ -114,9 +119,11 @@ struct StringerDetectionResult
   std::vector<DetectedPlane> detected_planes;   // Plane-based detection
   std::vector<DetectedColumn> detected_columns; // New: voxel connectivity-based detection
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr stringer_centers;
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr intersection_points;  // H-V line intersections
 
   StringerDetectionResult()
     : stringer_centers(new pcl::PointCloud<pcl::PointXYZRGB>)
+    , intersection_points(new pcl::PointCloud<pcl::PointXYZRGB>)
   {}
 };
 
@@ -243,6 +250,20 @@ private:
    * @return True if length is within width_min ~ width_max
    */
   bool matchesStringerColumnCriteria(const DetectedColumn& column);
+
+  /**
+   * @brief Check if horizontal line matches width criteria
+   * @param column Detected column
+   * @return True if horizontal length is within width_min ~ width_max
+   */
+  bool matchesHorizontalCriteria(const DetectedColumn& column);
+
+  /**
+   * @brief Check if vertical line matches height criteria
+   * @param column Detected column
+   * @return True if vertical height is within height_min ~ height_max
+   */
+  bool matchesVerticalCriteria(const DetectedColumn& column);
 
   StringerDetectorParams params_;
 };
