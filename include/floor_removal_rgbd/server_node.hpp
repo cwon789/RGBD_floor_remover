@@ -78,6 +78,7 @@ private:
   double yz_plane_distance_threshold_;
   int yz_plane_max_iterations_;
   double yz_plane_normal_x_threshold_;
+  double yz_plane_marker_thickness_;  // Marker visualization thickness offset (can be positive or negative)
 
   // Topic names
   std::string input_cloud_topic_;

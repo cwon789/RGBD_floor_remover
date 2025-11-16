@@ -61,3 +61,10 @@ floor_removal_node:
     yz_plane_max_iterations: 200        # maximum RANSAC iterations
     yz_plane_normal_x_threshold: 0.3    # minimum X component of normal (perpendicular to X axis)
                                         # Lower threshold for testing - increase if needed
+
+    # Visualization marker thickness extension
+    yz_plane_marker_thickness: -0.05      # meters - extend thickness in one direction from detected plane
+                                        # Positive: extend in +normal direction (away from origin)
+                                        # Negative: extend in -normal direction (toward origin)
+                                        # The detected plane position stays fixed, only thickness grows
+                                        # Does NOT affect plane detection, only visualization

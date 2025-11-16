@@ -54,11 +54,13 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   yz_plane_distance_threshold_ = this->get_parameter("yz_plane_distance_threshold").as_double();
   yz_plane_max_iterations_ = this->get_parameter("yz_plane_max_iterations").as_int();
   yz_plane_normal_x_threshold_ = this->get_parameter("yz_plane_normal_x_threshold").as_double();
+  yz_plane_marker_thickness_ = this->get_parameter("yz_plane_marker_thickness").as_double();
 
   if (enable_yz_plane_detection_) {
     RCLCPP_INFO(this->get_logger(), "[YZ PLANE] YZ plane detection enabled");
     RCLCPP_INFO(this->get_logger(), "[YZ PLANE]   Distance threshold: %.3f m", yz_plane_distance_threshold_);
     RCLCPP_INFO(this->get_logger(), "[YZ PLANE]   Normal X threshold: %.3f", yz_plane_normal_x_threshold_);
+    RCLCPP_INFO(this->get_logger(), "[YZ PLANE]   Marker thickness offset: %.3f m", yz_plane_marker_thickness_);
   }
 
   // TF2
@@ -174,6 +176,7 @@ void FloorRemovalServerNode::declareParameters()
   this->declare_parameter<double>("yz_plane_distance_threshold", 0.02);
   this->declare_parameter<int>("yz_plane_max_iterations", 100);
   this->declare_parameter<double>("yz_plane_normal_x_threshold", 0.7);
+  this->declare_parameter<double>("yz_plane_marker_thickness", 0.0);  // Default: no offset
 }
 
 void FloorRemovalServerNode::loadParameters()
@@ -345,22 +348,53 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
         extract.setNegative(false);
         extract.filter(*plane_cloud);
 
-        // Calculate plane bounds for visualization
+        // Calculate plane bounds for visualization using plane-fitted coordinate system
         if (!plane_cloud->points.empty()) {
-          float min_x = std::numeric_limits<float>::max();
-          float max_x = std::numeric_limits<float>::lowest();
-          float min_y = std::numeric_limits<float>::max();
-          float max_y = std::numeric_limits<float>::lowest();
-          float min_z = std::numeric_limits<float>::max();
-          float max_z = std::numeric_limits<float>::lowest();
+          // Plane equation: nx*x + ny*y + nz*z + d = 0
+          // Normal vector: (nx, ny, nz) - already normalized
+          Eigen::Vector3f normal(nx, ny, nz);
+
+          // Calculate centroid of plane points
+          Eigen::Vector3f centroid(0.0f, 0.0f, 0.0f);
+          for (const auto& pt : plane_cloud->points) {
+            centroid.x() += pt.x;
+            centroid.y() += pt.y;
+            centroid.z() += pt.z;
+          }
+          centroid /= plane_cloud->points.size();
+
+          // Create plane coordinate system
+          // Z-axis: normal direction
+          // X-axis: perpendicular to normal, preferring vertical direction
+          Eigen::Vector3f up(0.0f, 0.0f, 1.0f);
+          Eigen::Vector3f x_axis = up.cross(normal);
+
+          // If normal is too close to vertical, use Y-axis instead
+          if (x_axis.norm() < 0.1) {
+            Eigen::Vector3f forward(0.0f, 1.0f, 0.0f);
+            x_axis = forward.cross(normal);
+          }
+          x_axis.normalize();
+
+          Eigen::Vector3f y_axis = normal.cross(x_axis);
+          y_axis.normalize();
+
+          // Project all points onto the plane coordinate system
+          float min_u = std::numeric_limits<float>::max();
+          float max_u = std::numeric_limits<float>::lowest();
+          float min_v = std::numeric_limits<float>::max();
+          float max_v = std::numeric_limits<float>::lowest();
 
           for (const auto& pt : plane_cloud->points) {
-            min_x = std::min(min_x, pt.x);
-            max_x = std::max(max_x, pt.x);
-            min_y = std::min(min_y, pt.y);
-            max_y = std::max(max_y, pt.y);
-            min_z = std::min(min_z, pt.z);
-            max_z = std::max(max_z, pt.z);
+            Eigen::Vector3f point(pt.x, pt.y, pt.z);
+            Eigen::Vector3f relative = point - centroid;
+            float u = relative.dot(x_axis);
+            float v = relative.dot(y_axis);
+
+            min_u = std::min(min_u, u);
+            max_u = std::max(max_u, u);
+            min_v = std::min(min_v, v);
+            max_v = std::max(max_v, v);
           }
 
           // Create visualization marker
@@ -371,21 +405,38 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
           marker.type = visualization_msgs::msg::Marker::CUBE;
           marker.action = visualization_msgs::msg::Marker::ADD;
 
-          // Position at center of detected plane
-          marker.pose.position.x = (min_x + max_x) / 2.0;
-          marker.pose.position.y = (min_y + max_y) / 2.0;
-          marker.pose.position.z = (min_z + max_z) / 2.0;
-          marker.pose.orientation.w = 1.0;
+          // Apply thickness extension along the normal direction
+          // The plane stays at the detected position, but extends in one direction
+          // Positive: extend in +normal direction
+          // Negative: extend in -normal direction
+          // Marker center shifts by half the thickness to keep one side at the detected plane
+          float thickness_offset = static_cast<float>(yz_plane_marker_thickness_);
+          Eigen::Vector3f marker_center = centroid + normal * (thickness_offset * 0.5f);
 
-          // Size based on plane bounds and orientation
-          float size_x = max_x - min_x;
-          float size_y = max_y - min_y;
-          float size_z = max_z - min_z;
+          // Position at offset centroid
+          marker.pose.position.x = marker_center.x();
+          marker.pose.position.y = marker_center.y();
+          marker.pose.position.z = marker_center.z();
 
-          // YZ plane (X-direction normal) - thin in X
-          marker.scale.x = 0.02;
-          marker.scale.y = std::max(0.1f, size_y);
-          marker.scale.z = std::max(0.1f, size_z);
+          // Orientation: align marker's Z-axis with plane normal
+          // Create rotation matrix from plane coordinate system
+          Eigen::Matrix3f rotation;
+          rotation.col(0) = x_axis;
+          rotation.col(1) = y_axis;
+          rotation.col(2) = normal;
+
+          Eigen::Quaternionf quat(rotation);
+          marker.pose.orientation.x = quat.x();
+          marker.pose.orientation.y = quat.y();
+          marker.pose.orientation.z = quat.z();
+          marker.pose.orientation.w = quat.w();
+
+          // Size based on plane extent in plane coordinate system
+          // X and Y: extent along the plane
+          // Z: base thickness (0.02m) + absolute thickness extension
+          marker.scale.x = std::max(0.1f, max_u - min_u);
+          marker.scale.y = std::max(0.1f, max_v - min_v);
+          marker.scale.z = 0.02f + std::abs(thickness_offset);
 
           // Blue color for YZ planes
           marker.color.r = 0.0;
