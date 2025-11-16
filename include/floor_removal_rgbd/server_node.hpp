@@ -11,6 +11,7 @@
 
 #include "floor_removal_rgbd/plane_remover.hpp"
 #include <memory>
+#include <visualization_msgs/msg/marker_array.hpp>
 
 namespace floor_removal_rgbd
 {
@@ -57,9 +58,13 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr no_floor_cloud_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr floor_cloud_voxelized_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr no_floor_cloud_voxelized_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr no_floor_cloud_voxelized_2d_projected_pub_;  // 2D projected publisher
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr stringer_markers_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr stringer_centers_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr intersection_points_pub_;
+
+  // YZ plane detection publishers
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr yz_plane_marker_pub_;
 
   // TF2
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -67,6 +72,12 @@ private:
 
   // Core algorithm
   std::unique_ptr<PlaneRemover> plane_remover_;
+
+  // YZ plane detection parameters
+  bool enable_yz_plane_detection_;
+  double yz_plane_distance_threshold_;
+  int yz_plane_max_iterations_;
+  double yz_plane_normal_x_threshold_;
 
   // Topic names
   std::string input_cloud_topic_;

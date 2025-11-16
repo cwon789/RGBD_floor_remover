@@ -4,7 +4,11 @@
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <memory>
-#include "floor_removal_rgbd/stringer_detector.hpp"
+#include <cstddef>
+#include <vector>
+#include <cstdint>
+#include <cstddef>
+#include "floor_removal_rgbd/pallet_detector.hpp"
 
 namespace floor_removal_rgbd
 {
@@ -19,8 +23,7 @@ struct PlaneRemoverParams
   int ransac_max_iterations = 100;
   double floor_normal_z_threshold = 0.15;   // minimum Z component of normal
 
-  // Floor detection mode
-  bool auto_floor_detection_mode = true;    // true: auto-detect using z_min, false: use floor height
+  // Floor height in robot frame (Z coordinate)
   double floor_height = 0.0;                // meters - floor height in robot frame (Z coordinate)
 
   // Floor region parameters
@@ -35,12 +38,6 @@ struct PlaneRemoverParams
   // Detection range parameters
   double max_detection_distance = 10.0;     // maximum detection distance from camera (meters)
 
-  // Stringer detection parameters
-  bool enable_stringer_detection = true;    // enable pallet stringer detection
-  double stringer_width_min = 0.05;         // minimum stringer width (meters)
-  double stringer_width_max = 0.15;         // maximum stringer width (meters)
-  double stringer_height_min = 0.08;        // minimum stringer height (meters)
-  double stringer_height_max = 0.20;        // maximum stringer height (meters)
 
   // Camera extrinsic parameters (camera optical frame to robot base frame)
   // Translation: camera position in robot frame (meters)
@@ -67,6 +64,7 @@ struct PlaneRemovalResult
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr no_floor_cloud;
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr floor_cloud_voxelized;
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr no_floor_cloud_voxelized;
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr no_floor_cloud_voxelized_2d_projected;  // 2D projection of no_floor_cloud_voxelized
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr stringer_centers;
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr intersection_points;
 
@@ -80,16 +78,13 @@ struct PlaneRemovalResult
   size_t voxelized_points = 0;
   size_t floor_region_points = 0;
 
-  // Stringer detection results
-  std::vector<BoundingBox> detected_stringers;
-  std::vector<DetectedPlane> detected_planes;
-  std::vector<DetectedColumn> detected_columns;
 
   PlaneRemovalResult()
     : floor_cloud(new pcl::PointCloud<pcl::PointXYZRGB>)
     , no_floor_cloud(new pcl::PointCloud<pcl::PointXYZRGB>)
     , floor_cloud_voxelized(new pcl::PointCloud<pcl::PointXYZRGB>)
     , no_floor_cloud_voxelized(new pcl::PointCloud<pcl::PointXYZRGB>)
+    , no_floor_cloud_voxelized_2d_projected(new pcl::PointCloud<pcl::PointXYZRGB>)
     , stringer_centers(new pcl::PointCloud<pcl::PointXYZRGB>)
     , intersection_points(new pcl::PointCloud<pcl::PointXYZRGB>)
     , nx(0), ny(0), nz(0), d(0)
@@ -217,8 +212,21 @@ private:
     pcl::PointCloud<pcl::PointXYZRGB>::Ptr& floor_cloud,
     pcl::PointCloud<pcl::PointXYZRGB>::Ptr& no_floor_cloud);
 
+  /**
+   * @brief Project point cloud to 2D plane (Z=0)
+   * @param cloud Input cloud
+   * @param nx Plane normal X
+   * @param ny Plane normal Y
+   * @param nz Plane normal Z
+   * @param d Plane distance
+   * @return 2D projected cloud
+   */
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr projectTo2D(
+    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+    double nx, double ny, double nz, double d);
+
   PlaneRemoverParams params_;
-  std::unique_ptr<StringerDetector> stringer_detector_;
+  std::unique_ptr<PalletDetector> pallet_detector_;
 };
 
 }  // namespace floor_removal_rgbd

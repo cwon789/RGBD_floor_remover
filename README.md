@@ -21,7 +21,7 @@ This design allows the algorithm to:
 ## Features
 
 - **Robot Coordinate Frame Processing**: Processes in robot base frame (X=forward, Y=left, Z=up) for intuitive height-based filtering
-- **Dual Detection Modes**: Auto-detect floor using z_min OR use fixed floor height
+- **Fixed Floor Height Mode**: Uses fixed floor height for consistent floor removal
 - **Camera Extrinsic Support**: Configurable camera position and orientation
 - **Dual-Thickness Strategy**: Separate parameters for detection and removal
 - **Voxel Grid Downsampling**: Reduces computational cost and filters noise
@@ -61,7 +61,6 @@ Core algorithm class that handles floor plane detection and removal.
 - `process()`: Main processing pipeline
 - `transformToStandardFrame()`: Converts camera optical frame to robot base frame
 - `applyVoxelGrid()`: Downsamples point cloud
-- `findMinZ()`: Finds floor location in robot frame (auto mode)
 - `extractFloorRegionRobotFrame()`: Extracts candidate floor points
 - `detectFloorPlane()`: Runs RANSAC to detect floor plane
 - `isPlaneValid()`: Validates detected plane
@@ -116,8 +115,7 @@ Since Z points upward, the floor has the **minimum Z value** (lowest points).
    - Configurable leaf size (default: 3cm)
 
 3. **Determine Floor Height**
-   - **Auto Mode** (`auto_floor_detection_mode: true`): Finds minimum Z value in the scene
-   - **Fixed Mode** (`auto_floor_detection_mode: false`): Uses configured `floor_height` value
+   - Uses configured `floor_height` value in robot frame (Z coordinate)
 
 4. **Extract Floor Region (Detection)**
    - Selects points within `floor_detection_thickness` from determined height
@@ -176,16 +174,13 @@ Removal phase:
 | `output_floor_cloud_voxelized_topic` | `/floor_cloud_voxelized` | Output topic for floor points (voxelized) |
 | `output_no_floor_cloud_voxelized_topic` | `/no_floor_cloud_voxelized` | Output topic for non-floor points (voxelized) |
 
-### Floor Detection Mode
+### Floor Height
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `auto_floor_detection_mode` | `true` | `true`: Auto-detect floor using z_min<br>`false`: Use fixed floor height |
-| `floor_height` | `0.0` | Floor Z coordinate in robot frame (meters)<br>Used only when `auto_floor_detection_mode: false` |
+| `floor_height` | `0.0` | Floor Z coordinate in robot frame (meters) |
 
-**Mode Details**:
-- **Auto Mode** (`true`): Automatically finds the lowest point (z_min) in the scene. Best for testing and dynamic environments.
-- **Fixed Mode** (`false`): Uses the configured `floor_height` value. Best for production environments with known floor positions.
+The floor height is used as the reference Z coordinate for floor plane detection and removal. This value should be set based on the extrinsic transformation of the camera and the actual floor position in the robot coordinate frame.
 
 ### RANSAC Parameters
 
@@ -201,9 +196,14 @@ The normal threshold ensures the detected plane is approximately horizontal (flo
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `floor_detection_thickness` | `0.15` | Thickness for RANSAC plane detection (meters)<br>**Wider region** to get sufficient points after voxelization |
-| `floor_removal_thickness` | `0.03` | Thickness for actual floor removal (meters)<br>**Thin layer** to preserve objects on floor (e.g., 10cm pallets) |
-| `floor_margin` | `0.02` | Additional margin around detected plane (meters) |
+| `floor_detection_thickness` | `0.15` | Thickness for RANSAC plane detection (meters)<br>**Wider region** to get sufficient points after voxelization<br>Handles sensor noise and floor irregularities |
+| `floor_removal_thickness` | `0.03` | Thickness for actual floor removal (meters)<br>**Thin layer** to preserve objects on floor (e.g., 10cm pallets)<br>Determines how much area around the detected plane is removed |
+| `floor_margin` | `0.02` | Additional margin around detected plane (meters)<br>Provides extra clearance for floor removal |
+
+**Parameter Intuition**:
+- `floor_detection_thickness`: Think of this as the "search range" for finding the floor plane. It's wider to account for sensor noise and ensure RANSAC has enough points to work with.
+- `floor_removal_thickness`: This is the "removal zone" thickness. It determines how thick a layer around the detected plane gets removed. Keep it small to preserve objects on the floor.
+- `floor_margin`: This is additional "safety margin" for floor removal. Increase it if you're missing some floor edges.
 
 **Tuning Guide**:
 - If RANSAC fails (too few points): Increase `floor_detection_thickness`
@@ -342,8 +342,7 @@ Edit `config/params.yaml` and restart the node:
 ```yaml
 floor_removal_node:
   ros__parameters:
-    # Switch to fixed floor height mode (production)
-    auto_floor_detection_mode: false
+    # Set floor height based on extrinsic transformation
     floor_height: 0.0              # Floor at Z=0 in robot frame
 
     # Adjust detection thickness if RANSAC fails
@@ -359,36 +358,21 @@ floor_removal_node:
 
 ## Examples
 
-### Example 1: Testing with Auto Detection
-
-**Scenario**: Testing and calibration with dynamic floor detection
-
-**Configuration**:
-```yaml
-auto_floor_detection_mode: true  # Auto-detect floor
-use_voxel_grid: true
-voxel_leaf_size: 0.03
-use_default_transform: true
-```
-
-**Result**: Automatically finds floor in varying environments ✓
-
-### Example 2: Production with Fixed Floor Height
+### Example 1: Production with Fixed Floor Height
 
 **Scenario**: Production environment with known floor position
 
 **Configuration**:
 ```yaml
-auto_floor_detection_mode: false
 floor_height: 0.0                # Floor at robot base level
 floor_detection_thickness: 0.15
 floor_removal_thickness: 0.03
 use_default_transform: true
 ```
 
-**Result**: Consistent floor removal without dynamic detection overhead ✓
+**Result**: Consistent floor removal ✓
 
-### Example 3: Camera Mounted Above Robot
+### Example 2: Camera Mounted Above Robot
 
 **Scenario**: Camera mounted 15cm above robot base
 
@@ -400,19 +384,17 @@ cam_ty: 0.0
 cam_tz: 0.15                     # 15cm above base
 
 # Floor is now 15cm below camera
-auto_floor_detection_mode: false
 floor_height: -0.15              # Floor 15cm below camera origin
 ```
 
 **Result**: Correct floor detection with camera offset ✓
 
-### Example 4: Preserving Pallets and Detecting Stringers
+### Example 3: Preserving Pallets and Detecting Stringers
 
 **Scenario**: Detect floor but preserve 10cm pallets, detect stringers
 
 **Configuration**:
 ```yaml
-auto_floor_detection_mode: true
 floor_detection_thickness: 0.15  # Wide enough for RANSAC
 floor_removal_thickness: 0.03    # Thin removal (< 10cm)
 floor_margin: 0.02
@@ -450,12 +432,13 @@ enable_stringer_detection: false # Disable for speed
 2. Floor not visible in frame
 3. Floor not horizontal (normal check fails)
 4. Floor normal threshold too high
+5. Incorrect `floor_height` value
 
 **Solutions**:
 - Increase `floor_detection_thickness` to 0.2m or 0.3m
 - Check camera view (floor should be visible)
 - Decrease `floor_normal_z_threshold` to 0.5 if floor is tilted
-- Enable debug logs to see min_z and floor region point count
+- Verify `floor_height` value is correct for your setup
 
 ### Issue: RANSAC errors or unstable detection
 

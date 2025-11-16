@@ -5,6 +5,7 @@
 #include <pcl/filters/voxel_grid.h>
 #include <algorithm>
 #include <cmath>
+#include <memory>
 
 namespace floor_removal_rgbd
 {
@@ -12,26 +13,14 @@ namespace floor_removal_rgbd
 PlaneRemover::PlaneRemover(const PlaneRemoverParams& params)
   : params_(params)
 {
-  // Initialize stringer detector with corresponding parameters
-  StringerDetectorParams stringer_params;
-  stringer_params.width_min = params_.stringer_width_min;
-  stringer_params.width_max = params_.stringer_width_max;
-  stringer_params.height_min = params_.stringer_height_min;
-  stringer_params.height_max = params_.stringer_height_max;
-  stringer_detector_ = std::make_unique<StringerDetector>(stringer_params);
+  // Initialize pallet detector with default parameters
+  PalletDetectorParams pallet_params;
+  pallet_detector_ = std::make_unique<PalletDetector>(pallet_params);
 }
 
 void PlaneRemover::setParams(const PlaneRemoverParams& params)
 {
   params_ = params;
-
-  // Update stringer detector parameters
-  StringerDetectorParams stringer_params;
-  stringer_params.width_min = params_.stringer_width_min;
-  stringer_params.width_max = params_.stringer_width_max;
-  stringer_params.height_min = params_.stringer_height_min;
-  stringer_params.height_max = params_.stringer_height_max;
-  stringer_detector_->setParams(stringer_params);
 }
 
 void PlaneRemover::reset()
@@ -58,7 +47,13 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>
   std::cout << "[DEBUG] Filtered cloud size (within " << params_.max_detection_distance
             << "m): " << cloud_filtered->points.size() << std::endl;
 
-  // Step 3: Apply voxel grid downsampling if enabled (work in robot frame)
+  // Step 3: Extract floor region for RANSAC (based on Z height)
+  double min_z;
+  // Use configured floor height
+  min_z = params_.floor_height;
+  std::cout << "[DEBUG] Fixed mode - floor_height: " << min_z << std::endl;
+
+  // Step 4: Apply voxel grid downsampling if enabled (work in robot frame)
   auto cloud_voxelized = cloud_filtered;
   if (params_.use_voxel_grid) {
     cloud_voxelized = applyVoxelGrid(cloud_filtered);
@@ -66,18 +61,6 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>
     std::cout << "[DEBUG] Voxelized cloud size: " << result.voxelized_points << std::endl;
   } else {
     result.voxelized_points = cloud_filtered->points.size();
-  }
-
-  // Step 4: Extract floor region for RANSAC (based on Z height)
-  double min_z;
-  if (params_.auto_floor_detection_mode) {
-    // Auto mode: Find minimum Z (robot frame: Z=up, so min Z = floor)
-    min_z = findMinZ(cloud_voxelized);
-    std::cout << "[DEBUG] Auto mode - min_z: " << min_z << std::endl;
-  } else {
-    // Fixed mode: Use configured floor height
-    min_z = params_.floor_height;
-    std::cout << "[DEBUG] Fixed mode - floor_height: " << min_z << std::endl;
   }
 
   auto floor_region = extractFloorRegion(cloud_voxelized, min_z);
@@ -128,15 +111,11 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>
   removePointsBelowPlane(cloud_voxelized, nx, ny, nz, d,
                          result.floor_cloud_voxelized, result.no_floor_cloud_voxelized);
 
-  // Step 8: Detect stringers in the no-floor cloud (voxelized for efficiency)
-  if (params_.enable_stringer_detection && stringer_detector_) {
-    auto stringer_result = stringer_detector_->detect(result.no_floor_cloud_voxelized);
-    result.detected_stringers = stringer_result.detected_stringers;
-    result.detected_planes = stringer_result.detected_planes;
-    result.detected_columns = stringer_result.detected_columns;
-    result.stringer_centers = stringer_result.stringer_centers;
-    result.intersection_points = stringer_result.intersection_points;
-  }
+  // Step 8: Project no_floor_cloud_voxelized to 2D (floor removal plane)
+  // Calculate the plane used for floor removal (shifted by threshold)
+  double removal_d = d - (params_.floor_removal_thickness / 2.0 + params_.floor_margin);
+  result.no_floor_cloud_voxelized_2d_projected = projectTo2D(result.no_floor_cloud_voxelized, nx, ny, nz, removal_d);
+
 
   return result;
 }
@@ -368,6 +347,46 @@ void PlaneRemover::removePointsBelowPlane(
   no_floor_cloud->width = no_floor_cloud->points.size();
   no_floor_cloud->height = 1;
   no_floor_cloud->is_dense = false;
+}
+
+pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::projectTo2D(
+  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+  double nx, double ny, double nz, double d)
+{
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_2d(new pcl::PointCloud<pcl::PointXYZRGB>);
+  cloud_2d->header = cloud->header;
+  cloud_2d->points.reserve(cloud->points.size());
+
+  // Normalize plane normal vector
+  double norm = std::sqrt(nx*nx + ny*ny + nz*nz);
+  if (norm < 1e-6) {
+    // If normal vector is zero, return original cloud
+    *cloud_2d = *cloud;
+    return cloud_2d;
+  }
+  
+  double unit_nx = nx / norm;
+  double unit_ny = ny / norm;
+  double unit_nz = nz / norm;
+
+  for (const auto& point : cloud->points) {
+    // Calculate signed distance from point to plane
+    double signed_distance = unit_nx * point.x + unit_ny * point.y + unit_nz * point.z + d / norm;
+    
+    // Project point onto plane by moving along normal direction
+    pcl::PointXYZRGB point_2d = point;
+    point_2d.x -= signed_distance * unit_nx;
+    point_2d.y -= signed_distance * unit_ny;
+    point_2d.z -= signed_distance * unit_nz;
+    
+    cloud_2d->points.push_back(point_2d);
+  }
+
+  cloud_2d->width = cloud_2d->points.size();
+  cloud_2d->height = 1;
+  cloud_2d->is_dense = false;
+
+  return cloud_2d;
 }
 
 }  // namespace floor_removal_rgbd

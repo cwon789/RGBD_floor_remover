@@ -1,7 +1,7 @@
 floor_removal_node:
   ros__parameters:
     # Input topics
-    input_cloud_topic: "/camera/depth/color/points"
+    input_cloud_topic: "/lx_camera_node/LxCamera_Cloud"
 
     # Output topics
     output_floor_cloud_topic: "/floor_cloud"
@@ -15,31 +15,23 @@ floor_removal_node:
     floor_normal_z_threshold: 0.7    # minimum Z component of normal in robot frame (Z=up)
                                      # For horizontal floor, nz should be close to 1.0
 
-    # Floor detection mode (robot frame: X=forward, Y=left, Z=up)
-    auto_floor_detection_mode: false  # true: auto-detect floor using z_min, false: use floor_height
-    floor_height: 0.0                # meters - floor Z coordinate in robot frame when auto_detection is false
+    # Floor height in robot frame (Z coordinate)
+    floor_height: 0.0               # meters - floor Z coordinate in robot frame
                                      # Points with Z <= floor_height + detection_thickness are considered floor
 
     # Floor region parameters (robot frame: X=forward, Y=left, Z=up)
-    floor_detection_thickness: 0.15  # meters - thickness for RANSAC plane detection (15cm)
+    floor_detection_thickness: 0.01  # meters - thickness for RANSAC plane detection (noise level)
                                      # Large enough to get sufficient points after voxelization
-    floor_removal_thickness: 0.03    # meters - thickness for actual floor removal (3cm)
+    floor_removal_thickness: 0.01    # meters - thickness for actual floor removal (inflation)
                                      # Small to preserve objects on floor (e.g., 10cm pallets)
     floor_margin: 0.0               # additional margin around detected floor plane (meters)
 
     # Voxel grid downsampling (reduces computation and noise)
     use_voxel_grid: true             # enable voxel grid downsampling
-    voxel_leaf_size: 0.03            # voxel size (meters) - 1cm, reduces ~100k to ~10-15k points
+    voxel_leaf_size: 0.02            # voxel size (meters) - 2cm for better wall detection
 
     # Detection range parameters
-    max_detection_distance: 2.0     # maximum detection distance from camera (meters)
-
-    # Pallet stringer detection
-    enable_stringer_detection: true  # enable pallet stringer detection
-    stringer_width_min: 0.05         # minimum stringer width (meters) - 5cm
-    stringer_width_max: 0.1         # maximum stringer width (meters) - 15cm
-    stringer_height_min: 0.1        # minimum stringer height (meters) - 8cm
-    stringer_height_max: 0.2        # maximum stringer height (meters) - 20cm
+    max_detection_distance: 15.0     # maximum detection distance from camera (meters)
 
     # Camera extrinsic parameters
     # NOTE: Default optical->base transform is ALWAYS applied first
@@ -53,9 +45,19 @@ floor_removal_node:
     # Translation: additional camera offset in robot base frame (meters)
     cam_tx: 0.0                      # X offset (forward)
     cam_ty: 0.0                      # Y offset (left)
-    cam_tz: 0.16                      # Z offset (up)
+    cam_tz: 0.35                      # Z offset (up)
 
     # Rotation: Euler angles in robot base frame (radians) - ZYX order
-    cam_roll: 0.0                    # rotation around X axis (radians)
-    cam_pitch: 0.2356194                 # rotation around Y axis (radians)
+    cam_roll: 0.0                   # rotation around X axis (radians)
+    cam_pitch: 0.0                 # rotation around Y axis (radians)
     cam_yaw: 0.0                     # rotation around Z axis (radians)
+
+    # ========== YZ Plane Detection Parameters ==========
+    # Detect vertical walls (planes perpendicular to X axis)
+    enable_yz_plane_detection: true
+
+    # RANSAC parameters for YZ plane detection
+    yz_plane_distance_threshold: 0.03   # meters - points within this distance are inliers
+    yz_plane_max_iterations: 200        # maximum RANSAC iterations
+    yz_plane_normal_x_threshold: 0.3    # minimum X component of normal (perpendicular to X axis)
+                                        # Lower threshold for testing - increase if needed

@@ -3,6 +3,15 @@
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
+#include <pcl/segmentation/sac_segmentation.h>
+#include <pcl/filters/extract_indices.h>
+#include <pcl/segmentation/extract_clusters.h>
+#include <pcl/kdtree/kdtree.h>
+#include <visualization_msgs/msg/marker.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
+#include <Eigen/Core>
+#include <cmath>
+#include <limits>
 
 namespace floor_removal_rgbd
 {
@@ -21,7 +30,6 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   params.ransac_distance_threshold = this->get_parameter("ransac_distance_threshold").as_double();
   params.ransac_max_iterations = this->get_parameter("ransac_max_iterations").as_int();
   params.floor_normal_z_threshold = this->get_parameter("floor_normal_z_threshold").as_double();
-  params.auto_floor_detection_mode = this->get_parameter("auto_floor_detection_mode").as_bool();
   params.floor_height = this->get_parameter("floor_height").as_double();
   params.floor_detection_thickness = this->get_parameter("floor_detection_thickness").as_double();
   params.floor_removal_thickness = this->get_parameter("floor_removal_thickness").as_double();
@@ -29,11 +37,6 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   params.use_voxel_grid = this->get_parameter("use_voxel_grid").as_bool();
   params.voxel_leaf_size = this->get_parameter("voxel_leaf_size").as_double();
   params.max_detection_distance = this->get_parameter("max_detection_distance").as_double();
-  params.enable_stringer_detection = this->get_parameter("enable_stringer_detection").as_bool();
-  params.stringer_width_min = this->get_parameter("stringer_width_min").as_double();
-  params.stringer_width_max = this->get_parameter("stringer_width_max").as_double();
-  params.stringer_height_min = this->get_parameter("stringer_height_min").as_double();
-  params.stringer_height_max = this->get_parameter("stringer_height_max").as_double();
 
   // Camera extrinsic parameters
   params.use_default_transform = this->get_parameter("use_default_transform").as_bool();
@@ -45,6 +48,18 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   params.cam_yaw = this->get_parameter("cam_yaw").as_double();
 
   plane_remover_ = std::make_unique<PlaneRemover>(params);
+
+  // Load YZ plane detection parameters
+  enable_yz_plane_detection_ = this->get_parameter("enable_yz_plane_detection").as_bool();
+  yz_plane_distance_threshold_ = this->get_parameter("yz_plane_distance_threshold").as_double();
+  yz_plane_max_iterations_ = this->get_parameter("yz_plane_max_iterations").as_int();
+  yz_plane_normal_x_threshold_ = this->get_parameter("yz_plane_normal_x_threshold").as_double();
+
+  if (enable_yz_plane_detection_) {
+    RCLCPP_INFO(this->get_logger(), "[YZ PLANE] YZ plane detection enabled");
+    RCLCPP_INFO(this->get_logger(), "[YZ PLANE]   Distance threshold: %.3f m", yz_plane_distance_threshold_);
+    RCLCPP_INFO(this->get_logger(), "[YZ PLANE]   Normal X threshold: %.3f", yz_plane_normal_x_threshold_);
+  }
 
   // TF2
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -68,6 +83,10 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   no_floor_cloud_voxelized_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
     output_no_floor_cloud_voxelized_topic_, 10);
 
+  // Publisher for 2D projected no-floor cloud
+  no_floor_cloud_voxelized_2d_projected_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
+    "/no_floor_cloud_voxelized_2d_projected", 10);
+
   stringer_markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
     "/stringer_markers", 10);
 
@@ -77,17 +96,19 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   intersection_points_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
     "/intersection_points", 10);
 
+  // YZ plane marker publisher
+  if (enable_yz_plane_detection_) {
+    yz_plane_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
+      "/yz_plane_markers", 10);
+  }
+
   RCLCPP_INFO(this->get_logger(), "Floor Removal Server Node initialized");
   RCLCPP_INFO(this->get_logger(), "  Input: %s", input_cloud_topic_.c_str());
   RCLCPP_INFO(this->get_logger(), "  Output floor: %s", output_floor_cloud_topic_.c_str());
   RCLCPP_INFO(this->get_logger(), "  Output no-floor: %s", output_no_floor_cloud_topic_.c_str());
   RCLCPP_INFO(this->get_logger(), "  Output floor (voxelized): %s", output_floor_cloud_voxelized_topic_.c_str());
   RCLCPP_INFO(this->get_logger(), "  Output no-floor (voxelized): %s", output_no_floor_cloud_voxelized_topic_.c_str());
-  RCLCPP_INFO(this->get_logger(), "  Floor detection mode: %s",
-              params.auto_floor_detection_mode ? "auto (z_min)" : "fixed (floor height)");
-  if (!params.auto_floor_detection_mode) {
-    RCLCPP_INFO(this->get_logger(), "  Floor height: %.3f m", params.floor_height);
-  }
+  RCLCPP_INFO(this->get_logger(), "  Floor height: %.3f m", params.floor_height);
   RCLCPP_INFO(this->get_logger(), "  Voxel grid: %s (leaf size: %.3f m)",
               params.use_voxel_grid ? "enabled" : "disabled",
               params.voxel_leaf_size);
@@ -119,8 +140,6 @@ void FloorRemovalServerNode::declareParameters()
   this->declare_parameter<int>("ransac_max_iterations", 100);
   this->declare_parameter<double>("floor_normal_z_threshold", 0.15);
 
-  // Floor detection mode
-  this->declare_parameter<bool>("auto_floor_detection_mode", true);
   this->declare_parameter<double>("floor_height", 0.0);
 
   // Floor region parameters
@@ -136,11 +155,6 @@ void FloorRemovalServerNode::declareParameters()
   this->declare_parameter<double>("max_detection_distance", 10.0);
 
   // Stringer detection parameters
-  this->declare_parameter<bool>("enable_stringer_detection", true);
-  this->declare_parameter<double>("stringer_width_min", 0.05);
-  this->declare_parameter<double>("stringer_width_max", 0.15);
-  this->declare_parameter<double>("stringer_height_min", 0.08);
-  this->declare_parameter<double>("stringer_height_max", 0.20);
 
   // Camera extrinsic parameters
   this->declare_parameter<bool>("use_default_transform", true);
@@ -154,6 +168,12 @@ void FloorRemovalServerNode::declareParameters()
   // Legacy parameters (kept for compatibility)
   this->declare_parameter<double>("floor_height_min", -5.0);
   this->declare_parameter<double>("floor_height_max", -0.3);
+
+  // YZ plane detection parameters
+  this->declare_parameter<bool>("enable_yz_plane_detection", true);
+  this->declare_parameter<double>("yz_plane_distance_threshold", 0.02);
+  this->declare_parameter<int>("yz_plane_max_iterations", 100);
+  this->declare_parameter<double>("yz_plane_normal_x_threshold", 0.7);
 }
 
 void FloorRemovalServerNode::loadParameters()
@@ -194,11 +214,6 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
       RCLCPP_INFO(this->get_logger(),
                   "  Plane: normal=[%.2f, %.2f, %.2f], d=%.3f",
                   result.nx, result.ny, result.nz, result.d);
-      if (!result.detected_stringers.empty()) {
-        RCLCPP_INFO(this->get_logger(),
-                    "  Detected %zu stringers",
-                    result.detected_stringers.size());
-      }
     } else {
       RCLCPP_WARN(this->get_logger(), "No floor plane detected");
     }
@@ -225,6 +240,186 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
   floor_cloud_voxelized_pub_->publish(floor_voxelized_msg);
   no_floor_cloud_voxelized_pub_->publish(no_floor_voxelized_msg);
 
+  // Publish 2D projected no-floor cloud
+  if (result.no_floor_cloud_voxelized_2d_projected) {
+    sensor_msgs::msg::PointCloud2 no_floor_voxelized_2d_projected_msg;
+    pcl::toROSMsg(*result.no_floor_cloud_voxelized_2d_projected, no_floor_voxelized_2d_projected_msg);
+    no_floor_voxelized_2d_projected_msg.header = msg->header;
+    no_floor_cloud_voxelized_2d_projected_pub_->publish(no_floor_voxelized_2d_projected_msg);
+  }
+
+  // YZ plane detection (detect vertical walls) - Cluster-based approach
+  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+              "[YZ PLANE DEBUG] enable=%d, no_floor_voxelized size=%zu",
+              enable_yz_plane_detection_, result.no_floor_cloud_voxelized->points.size());
+
+  if (enable_yz_plane_detection_ && !result.no_floor_cloud_voxelized->points.empty()) {
+    // Create marker array for all planes
+    visualization_msgs::msg::MarkerArray marker_array;
+
+    // Step 1: Euclidean Clustering to separate objects
+    pcl::search::KdTree<pcl::PointXYZRGB>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZRGB>);
+    tree->setInputCloud(result.no_floor_cloud_voxelized);
+
+    std::vector<pcl::PointIndices> cluster_indices;
+    pcl::EuclideanClusterExtraction<pcl::PointXYZRGB> ec;
+    ec.setClusterTolerance(0.10);  // 10cm - 클러스터 간 거리
+    ec.setMinClusterSize(50);      // 최소 포인트 개수
+    ec.setMaxClusterSize(25000);   // 최대 포인트 개수
+    ec.setSearchMethod(tree);
+    ec.setInputCloud(result.no_floor_cloud_voxelized);
+    ec.extract(cluster_indices);
+
+    if (debug_counter_ % 30 == 0) {
+      RCLCPP_INFO(this->get_logger(),
+                  "[YZ PLANE DEBUG] Found %zu clusters", cluster_indices.size());
+    }
+
+    // Step 2: For each cluster, detect a plane
+    int plane_count = 0;
+    for (size_t i = 0; i < cluster_indices.size(); i++) {
+      // Extract cluster points
+      pcl::PointCloud<pcl::PointXYZRGB>::Ptr cluster_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
+      for (const auto& idx : cluster_indices[i].indices) {
+        cluster_cloud->points.push_back(result.no_floor_cloud_voxelized->points[idx]);
+      }
+      cluster_cloud->width = cluster_cloud->points.size();
+      cluster_cloud->height = 1;
+      cluster_cloud->is_dense = true;
+
+      if (debug_counter_ % 30 == 0) {
+        RCLCPP_INFO(this->get_logger(),
+                    "[YZ PLANE DEBUG] Cluster %zu: %zu points", i, cluster_cloud->points.size());
+      }
+
+      // RANSAC plane segmentation with axis constraint
+      pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients);
+      pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
+
+      pcl::SACSegmentation<pcl::PointXYZRGB> seg;
+      seg.setOptimizeCoefficients(true);
+      seg.setModelType(pcl::SACMODEL_PERPENDICULAR_PLANE);
+      seg.setMethodType(pcl::SAC_RANSAC);
+      seg.setMaxIterations(yz_plane_max_iterations_);
+      seg.setDistanceThreshold(yz_plane_distance_threshold_);
+
+      // Set axis to X (looking for planes perpendicular to X axis)
+      Eigen::Vector3f axis(1.0, 0.0, 0.0);  // X axis
+      seg.setAxis(axis);
+      seg.setEpsAngle(0.5);  // ~30 degrees tolerance
+
+      seg.setInputCloud(cluster_cloud);
+      seg.segment(*inliers, *coefficients);
+
+      // Check if enough inliers found
+      if (inliers->indices.size() < 30) {  // 클러스터별로 더 작은 threshold
+        continue;
+      }
+
+      // Extract plane normal: ax + by + cz + d = 0
+      double nx = coefficients->values[0];
+      double ny = coefficients->values[1];
+      double nz = coefficients->values[2];
+      double d = coefficients->values[3];
+
+      // Normalize the normal vector
+      double norm = sqrt(nx*nx + ny*ny + nz*nz);
+      nx /= norm;
+      ny /= norm;
+      nz /= norm;
+      d /= norm;
+
+      if (debug_counter_ % 30 == 0) {
+        RCLCPP_INFO(this->get_logger(),
+                    "[YZ PLANE DEBUG] Cluster %zu plane: normal=[%.2f, %.2f, %.2f], inliers=%zu",
+                    i, nx, ny, nz, inliers->indices.size());
+      }
+
+      // Check if this is a YZ plane (normal should point in X direction)
+      if (fabs(nx) > yz_plane_normal_x_threshold_) {
+        // Extract inlier points
+        pcl::PointCloud<pcl::PointXYZRGB>::Ptr plane_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
+        pcl::ExtractIndices<pcl::PointXYZRGB> extract;
+        extract.setInputCloud(cluster_cloud);
+        extract.setIndices(inliers);
+        extract.setNegative(false);
+        extract.filter(*plane_cloud);
+
+        // Calculate plane bounds for visualization
+        if (!plane_cloud->points.empty()) {
+          float min_x = std::numeric_limits<float>::max();
+          float max_x = std::numeric_limits<float>::lowest();
+          float min_y = std::numeric_limits<float>::max();
+          float max_y = std::numeric_limits<float>::lowest();
+          float min_z = std::numeric_limits<float>::max();
+          float max_z = std::numeric_limits<float>::lowest();
+
+          for (const auto& pt : plane_cloud->points) {
+            min_x = std::min(min_x, pt.x);
+            max_x = std::max(max_x, pt.x);
+            min_y = std::min(min_y, pt.y);
+            max_y = std::max(max_y, pt.y);
+            min_z = std::min(min_z, pt.z);
+            max_z = std::max(max_z, pt.z);
+          }
+
+          // Create visualization marker
+          visualization_msgs::msg::Marker marker;
+          marker.header = msg->header;
+          marker.ns = "yz_plane";
+          marker.id = plane_count;
+          marker.type = visualization_msgs::msg::Marker::CUBE;
+          marker.action = visualization_msgs::msg::Marker::ADD;
+
+          // Position at center of detected plane
+          marker.pose.position.x = (min_x + max_x) / 2.0;
+          marker.pose.position.y = (min_y + max_y) / 2.0;
+          marker.pose.position.z = (min_z + max_z) / 2.0;
+          marker.pose.orientation.w = 1.0;
+
+          // Size based on plane bounds and orientation
+          float size_x = max_x - min_x;
+          float size_y = max_y - min_y;
+          float size_z = max_z - min_z;
+
+          // YZ plane (X-direction normal) - thin in X
+          marker.scale.x = 0.02;
+          marker.scale.y = std::max(0.1f, size_y);
+          marker.scale.z = std::max(0.1f, size_z);
+
+          // Blue color for YZ planes
+          marker.color.r = 0.0;
+          marker.color.g = 0.5;
+          marker.color.b = 1.0;
+          marker.color.a = 0.5;
+
+          marker.lifetime = rclcpp::Duration::from_seconds(2.0);  // 2초로 증가
+
+          // Add marker to array instead of publishing immediately
+          marker_array.markers.push_back(marker);
+
+          if (debug_counter_ % 30 == 0) {
+            RCLCPP_INFO(this->get_logger(),
+                        "[YZ PLANE] Detected wall %d (cluster %zu): normal=[%.2f, %.2f, %.2f], d=%.3f, inliers=%zu",
+                        plane_count, i, nx, ny, nz, d, inliers->indices.size());
+          }
+
+          plane_count++;
+        }
+      }
+    }
+
+    // Publish all markers at once
+    if (!marker_array.markers.empty()) {
+      yz_plane_marker_pub_->publish(marker_array);
+    }
+
+    if (debug_counter_ % 30 == 0) {
+      RCLCPP_INFO(this->get_logger(),
+                  "[YZ PLANE DEBUG] Total planes detected: %d", plane_count);
+    }
+  }
+
   // Only process stringers if plane was found
   if (!result.plane_found) {
     return;
@@ -246,84 +441,6 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
     intersection_points_pub_->publish(intersection_points_msg);
   }
 
-  // Publish stringer column markers - separate horizontal and vertical
-  std::cout << "[DEBUG SERVER] Publishing line markers for " << result.detected_columns.size() << " column stringers" << std::endl;
-
-  visualization_msgs::msg::MarkerArray marker_array;
-  int horizontal_count = 0;
-  int vertical_count = 0;
-
-  for (size_t i = 0; i < result.detected_columns.size(); ++i) {
-    const auto& column = result.detected_columns[i];
-
-    std::cout << "[DEBUG SERVER] Column marker " << i
-              << (column.is_horizontal ? " [HORIZONTAL]" : " [VERTICAL]")
-              << " from (" << column.start_x << ", " << column.start_y << ", " << column.start_z << ")"
-              << " to (" << column.end_x << ", " << column.end_y << ", " << column.end_z << ")"
-              << " Length=" << column.length << "m" << std::endl;
-
-    visualization_msgs::msg::Marker marker;
-    marker.header = msg->header;
-    marker.id = static_cast<int>(i);
-    marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
-    marker.action = visualization_msgs::msg::Marker::ADD;
-
-    // Line from start to end
-    geometry_msgs::msg::Point start_point;
-    start_point.x = column.start_x;
-    start_point.y = column.start_y;
-    start_point.z = column.start_z;
-
-    geometry_msgs::msg::Point end_point;
-    end_point.x = column.end_x;
-    end_point.y = column.end_y;
-    end_point.z = column.end_z;
-
-    marker.points.push_back(start_point);
-    marker.points.push_back(end_point);
-
-    // Line width
-    marker.scale.x = 0.005;  // 5mm thick line
-
-    if (column.is_horizontal) {
-      // Horizontal line - green
-      marker.ns = "horizontal_stringers";
-      marker.color.r = 0.0;
-      marker.color.g = 1.0;
-      marker.color.b = 0.0;
-      marker.color.a = 1.0;
-      horizontal_count++;
-    } else {
-      // Vertical line - blue
-      marker.ns = "vertical_stringers";
-      marker.color.r = 0.0;
-      marker.color.g = 0.0;
-      marker.color.b = 1.0;
-      marker.color.a = 1.0;
-      vertical_count++;
-    }
-
-    marker.lifetime = rclcpp::Duration::from_seconds(0.5);
-    marker_array.markers.push_back(marker);
-  }
-
-  std::cout << "[DEBUG SERVER] Horizontal: " << horizontal_count << ", Vertical: " << vertical_count << std::endl;
-
-  if (!marker_array.markers.empty()) {
-    stringer_markers_pub_->publish(marker_array);
-  } else {
-    // Clear previous markers
-    visualization_msgs::msg::Marker delete_h, delete_v;
-    delete_h.header = msg->header;
-    delete_h.ns = "horizontal_stringers";
-    delete_h.action = visualization_msgs::msg::Marker::DELETEALL;
-    delete_v.header = msg->header;
-    delete_v.ns = "vertical_stringers";
-    delete_v.action = visualization_msgs::msg::Marker::DELETEALL;
-    marker_array.markers.push_back(delete_h);
-    marker_array.markers.push_back(delete_v);
-    stringer_markers_pub_->publish(marker_array);
-  }
 }
 
 }  // namespace floor_removal_rgbd
