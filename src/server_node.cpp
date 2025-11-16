@@ -55,12 +55,15 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   yz_plane_max_iterations_ = this->get_parameter("yz_plane_max_iterations").as_int();
   yz_plane_normal_x_threshold_ = this->get_parameter("yz_plane_normal_x_threshold").as_double();
   yz_plane_marker_thickness_ = this->get_parameter("yz_plane_marker_thickness").as_double();
+  yz_plane_marker_bidirectional_ = this->get_parameter("yz_plane_marker_bidirectional").as_bool();
 
   if (enable_yz_plane_detection_) {
     RCLCPP_INFO(this->get_logger(), "[YZ PLANE] YZ plane detection enabled");
     RCLCPP_INFO(this->get_logger(), "[YZ PLANE]   Distance threshold: %.3f m", yz_plane_distance_threshold_);
     RCLCPP_INFO(this->get_logger(), "[YZ PLANE]   Normal X threshold: %.3f", yz_plane_normal_x_threshold_);
-    RCLCPP_INFO(this->get_logger(), "[YZ PLANE]   Marker thickness offset: %.3f m", yz_plane_marker_thickness_);
+    RCLCPP_INFO(this->get_logger(), "[YZ PLANE]   Marker thickness: %.3f m (%s)",
+                yz_plane_marker_thickness_,
+                yz_plane_marker_bidirectional_ ? "bidirectional" : "unidirectional");
   }
 
   // TF2
@@ -102,6 +105,8 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   if (enable_yz_plane_detection_) {
     yz_plane_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
       "/yz_plane_markers", 10);
+    pallet_candidates_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
+      "/pallet_candidates", 10);
   }
 
   RCLCPP_INFO(this->get_logger(), "Floor Removal Server Node initialized");
@@ -177,6 +182,7 @@ void FloorRemovalServerNode::declareParameters()
   this->declare_parameter<int>("yz_plane_max_iterations", 100);
   this->declare_parameter<double>("yz_plane_normal_x_threshold", 0.7);
   this->declare_parameter<double>("yz_plane_marker_thickness", 0.0);  // Default: no offset
+  this->declare_parameter<bool>("yz_plane_marker_bidirectional", false);  // Default: unidirectional
 }
 
 void FloorRemovalServerNode::loadParameters()
@@ -259,6 +265,9 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
   if (enable_yz_plane_detection_ && !result.no_floor_cloud_voxelized->points.empty()) {
     // Create marker array for all planes
     visualization_msgs::msg::MarkerArray marker_array;
+
+    // Accumulate all pallet candidate points across all detected planes
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr all_pallet_candidates(new pcl::PointCloud<pcl::PointXYZRGB>);
 
     // Step 1: Euclidean Clustering to separate objects
     pcl::search::KdTree<pcl::PointXYZRGB>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZRGB>);
@@ -363,20 +372,36 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
           }
           centroid /= plane_cloud->points.size();
 
-          // Create plane coordinate system
+          // Create plane coordinate system with stable orientation
           // Z-axis: normal direction
-          // X-axis: perpendicular to normal, preferring vertical direction
-          Eigen::Vector3f up(0.0f, 0.0f, 1.0f);
-          Eigen::Vector3f x_axis = up.cross(normal);
+          // For YZ planes (normal in X direction), we want consistent Y and Z axes
 
-          // If normal is too close to vertical, use Y-axis instead
-          if (x_axis.norm() < 0.1) {
-            Eigen::Vector3f forward(0.0f, 1.0f, 0.0f);
-            x_axis = forward.cross(normal);
+          // Force Y-axis to be horizontal (in XY plane, perpendicular to normal's XY component)
+          Eigen::Vector3f y_axis;
+          if (std::abs(nx) > 0.9) {
+            // Normal is nearly parallel to X axis - YZ plane
+            // Force Y-axis to align with world Y
+            y_axis = Eigen::Vector3f(0.0f, 1.0f, 0.0f);
+          } else {
+            // For other orientations, project normal onto XY plane and get perpendicular
+            Eigen::Vector3f normal_xy(nx, ny, 0.0f);
+            float norm_xy = normal_xy.norm();
+            if (norm_xy > 0.01) {
+              // Y-axis perpendicular to normal in XY plane
+              y_axis = Eigen::Vector3f(-ny, nx, 0.0f) / norm_xy;
+            } else {
+              // Normal is nearly vertical
+              y_axis = Eigen::Vector3f(0.0f, 1.0f, 0.0f);
+            }
           }
+          y_axis.normalize();
+
+          // X-axis is cross product of Y and Z (normal)
+          Eigen::Vector3f x_axis = y_axis.cross(normal);
           x_axis.normalize();
 
-          Eigen::Vector3f y_axis = normal.cross(x_axis);
+          // Recompute Y-axis to ensure orthogonality
+          y_axis = normal.cross(x_axis);
           y_axis.normalize();
 
           // Project all points onto the plane coordinate system
@@ -406,14 +431,25 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
           marker.action = visualization_msgs::msg::Marker::ADD;
 
           // Apply thickness extension along the normal direction
-          // The plane stays at the detected position, but extends in one direction
-          // Positive: extend in +normal direction
-          // Negative: extend in -normal direction
-          // Marker center shifts by half the thickness to keep one side at the detected plane
           float thickness_offset = static_cast<float>(yz_plane_marker_thickness_);
-          Eigen::Vector3f marker_center = centroid + normal * (thickness_offset * 0.5f);
+          Eigen::Vector3f marker_center;
+          float marker_thickness;
 
-          // Position at offset centroid
+          if (yz_plane_marker_bidirectional_) {
+            // Bidirectional: extend equally in both normal directions from detected plane
+            // Marker center stays at detected plane centroid
+            marker_center = centroid;
+            marker_thickness = 0.02f + std::abs(thickness_offset);
+          } else {
+            // Unidirectional: extend in one direction only
+            // Positive: extend in +normal direction
+            // Negative: extend in -normal direction
+            // Marker center shifts by half to keep one side at the detected plane
+            marker_center = centroid + normal * (thickness_offset * 0.5f);
+            marker_thickness = 0.02f + std::abs(thickness_offset);
+          }
+
+          // Position at calculated center
           marker.pose.position.x = marker_center.x();
           marker.pose.position.y = marker_center.y();
           marker.pose.position.z = marker_center.z();
@@ -433,10 +469,10 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
 
           // Size based on plane extent in plane coordinate system
           // X and Y: extent along the plane
-          // Z: base thickness (0.02m) + absolute thickness extension
+          // Z: thickness based on mode
           marker.scale.x = std::max(0.1f, max_u - min_u);
           marker.scale.y = std::max(0.1f, max_v - min_v);
-          marker.scale.z = 0.02f + std::abs(thickness_offset);
+          marker.scale.z = marker_thickness;
 
           // Blue color for YZ planes
           marker.color.r = 0.0;
@@ -448,6 +484,46 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
 
           // Add marker to array instead of publishing immediately
           marker_array.markers.push_back(marker);
+
+          // Filter points that are within the extended plane thickness
+          // Use the entire no_floor_cloud_voxelized, not just the cluster
+          for (const auto& pt : result.no_floor_cloud_voxelized->points) {
+            Eigen::Vector3f point(pt.x, pt.y, pt.z);
+
+            // Calculate signed distance from point to plane
+            float signed_distance = normal.dot(point) + d;
+
+            // Check if point is within the thickness bounds
+            bool inside = false;
+            if (yz_plane_marker_bidirectional_) {
+              // Bidirectional: within ±(thickness/2) from detected plane
+              float half_thickness = std::abs(thickness_offset) / 2.0f;
+              inside = (std::abs(signed_distance) <= half_thickness + 0.01f);  // 0.01 = base thickness/2
+            } else {
+              // Unidirectional: within one-sided thickness
+              if (thickness_offset >= 0) {
+                // Extend in +normal direction: plane to plane+thickness
+                inside = (signed_distance >= -0.01f && signed_distance <= thickness_offset + 0.01f);
+              } else {
+                // Extend in -normal direction: plane+thickness to plane
+                inside = (signed_distance >= thickness_offset - 0.01f && signed_distance <= 0.01f);
+              }
+            }
+
+            if (inside) {
+              // Also check if point is within the plane's XY extent (optional - to avoid points behind/front)
+              Eigen::Vector3f relative = point - centroid;
+              float u = relative.dot(x_axis);
+              float v = relative.dot(y_axis);
+
+              // Allow some margin beyond the detected plane extent
+              float margin = 0.1f;  // 10cm margin
+              if (u >= min_u - margin && u <= max_u + margin &&
+                  v >= min_v - margin && v <= max_v + margin) {
+                all_pallet_candidates->points.push_back(pt);
+              }
+            }
+          }
 
           if (debug_counter_ % 30 == 0) {
             RCLCPP_INFO(this->get_logger(),
@@ -463,6 +539,24 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
     // Publish all markers at once
     if (!marker_array.markers.empty()) {
       yz_plane_marker_pub_->publish(marker_array);
+    }
+
+    // Publish pallet candidates
+    if (!all_pallet_candidates->points.empty()) {
+      all_pallet_candidates->width = all_pallet_candidates->points.size();
+      all_pallet_candidates->height = 1;
+      all_pallet_candidates->is_dense = true;
+
+      sensor_msgs::msg::PointCloud2 pallet_candidates_msg;
+      pcl::toROSMsg(*all_pallet_candidates, pallet_candidates_msg);
+      pallet_candidates_msg.header = msg->header;
+      pallet_candidates_pub_->publish(pallet_candidates_msg);
+
+      if (debug_counter_ % 30 == 0) {
+        RCLCPP_INFO(this->get_logger(),
+                    "[YZ PLANE] Pallet candidates: %zu points from %d planes",
+                    all_pallet_candidates->points.size(), plane_count);
+      }
     }
 
     if (debug_counter_ % 30 == 0) {

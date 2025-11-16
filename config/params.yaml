@@ -63,8 +63,13 @@ floor_removal_node:
                                         # Lower threshold for testing - increase if needed
 
     # Visualization marker thickness extension
-    yz_plane_marker_thickness: -0.05      # meters - extend thickness in one direction from detected plane
-                                        # Positive: extend in +normal direction (away from origin)
-                                        # Negative: extend in -normal direction (toward origin)
-                                        # The detected plane position stays fixed, only thickness grows
+    yz_plane_marker_thickness: 0.02    # meters - thickness extension amount
+                                        # In unidirectional mode: extend in one direction from detected plane
+                                        #   Positive: extend in +normal direction (away from origin)
+                                        #   Negative: extend in -normal direction (toward origin)
+                                        # In bidirectional mode: extend equally in both directions
                                         # Does NOT affect plane detection, only visualization
+
+    yz_plane_marker_bidirectional: true  # Thickness extension mode
+                                        # false: unidirectional - extend in one direction only (sign of thickness matters)
+                                        # true: bidirectional - extend equally in both ±normal directions (sign ignored)

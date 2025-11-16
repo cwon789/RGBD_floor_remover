@@ -65,6 +65,7 @@ private:
 
   // YZ plane detection publishers
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr yz_plane_marker_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pallet_candidates_pub_;
 
   // TF2
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -79,6 +80,7 @@ private:
   int yz_plane_max_iterations_;
   double yz_plane_normal_x_threshold_;
   double yz_plane_marker_thickness_;  // Marker visualization thickness offset (can be positive or negative)
+  bool yz_plane_marker_bidirectional_;  // If true, extend in both directions; if false, extend in one direction only
 
   // Topic names
   std::string input_cloud_topic_;
