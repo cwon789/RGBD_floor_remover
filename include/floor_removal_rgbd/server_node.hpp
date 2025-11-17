@@ -10,8 +10,8 @@
 #include <tf2_ros/buffer.h>
 
 #include "floor_removal_rgbd/plane_remover.hpp"
+#include "floor_removal_rgbd/pallet_detection.hpp"
 #include <memory>
-#include <visualization_msgs/msg/marker_array.hpp>
 
 namespace floor_removal_rgbd
 {
@@ -68,16 +68,12 @@ private:
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
-  // Core algorithm
+  // Core algorithms
   std::unique_ptr<PlaneRemover> plane_remover_;
+  std::unique_ptr<PalletDetection> pallet_detection_;
 
-  // YZ plane detection parameters
-  bool enable_yz_plane_detection_;
-  double yz_plane_distance_threshold_;
-  int yz_plane_max_iterations_;
-  double yz_plane_normal_x_threshold_;
-  double yz_plane_marker_thickness_;  // Marker visualization thickness offset (can be positive or negative)
-  bool yz_plane_marker_bidirectional_;  // If true, extend in both directions; if false, extend in one direction only
+  // Pallet detection enable flag
+  bool enable_pallet_detection_;
 
   // Topic names
   std::string input_cloud_topic_;

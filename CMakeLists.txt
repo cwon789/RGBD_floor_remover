@@ -28,7 +28,22 @@ include_directories(
   ${PCL_INCLUDE_DIRS}
 )
 
+# Core library: pallet_detection
+add_library(pallet_detection
+  src/pallet_detection.cpp
+)
 
+ament_target_dependencies(pallet_detection
+  rclcpp
+  sensor_msgs
+  visualization_msgs
+  pcl_conversions
+  pcl_ros
+)
+
+target_link_libraries(pallet_detection
+  ${PCL_LIBRARIES}
+)
 
 # Core library: plane_remover
 add_library(plane_remover
@@ -64,6 +79,7 @@ ament_target_dependencies(floor_removal_node
 )
 
 target_link_libraries(floor_removal_node
+  pallet_detection
   plane_remover
   ${PCL_LIBRARIES}
 )
@@ -76,6 +92,7 @@ install(TARGETS
 
 # Install libraries
 install(TARGETS
+  pallet_detection
   plane_remover
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib

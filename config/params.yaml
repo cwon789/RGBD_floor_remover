@@ -52,24 +52,27 @@ floor_removal_node:
     cam_pitch: 0.0                 # rotation around Y axis (radians)
     cam_yaw: 0.0                     # rotation around Z axis (radians)
 
-    # ========== YZ Plane Detection Parameters ==========
-    # Detect vertical walls (planes perpendicular to X axis)
-    enable_yz_plane_detection: true
+    # ========== Pallet Detection Parameters ==========
+    # Detect vertical walls (YZ planes perpendicular to X axis) for pallet detection
+    enable_pallet_detection: true
 
-    # RANSAC parameters for YZ plane detection
-    yz_plane_distance_threshold: 0.03   # meters - points within this distance are inliers
-    yz_plane_max_iterations: 200        # maximum RANSAC iterations
-    yz_plane_normal_x_threshold: 0.3    # minimum X component of normal (perpendicular to X axis)
-                                        # Lower threshold for testing - increase if needed
+    # RANSAC parameters for plane detection
+    pallet_distance_threshold: 0.03     # meters - points within this distance are inliers
+    pallet_max_iterations: 200          # maximum RANSAC iterations
+    pallet_normal_x_threshold: 0.3      # minimum X component of normal (perpendicular to X axis)
+
+    # Clustering parameters
+    pallet_cluster_tolerance: 0.10      # meters - distance between clusters (10cm)
+    pallet_min_cluster_size: 50         # minimum points in a cluster
+    pallet_max_cluster_size: 25000      # maximum points in a cluster
+    pallet_min_plane_inliers: 30        # minimum inliers to consider a valid plane
 
     # Visualization marker thickness extension
-    yz_plane_marker_thickness: 0.02    # meters - thickness extension amount
+    pallet_marker_thickness: 0.02       # meters - thickness extension amount
                                         # In unidirectional mode: extend in one direction from detected plane
-                                        #   Positive: extend in +normal direction (away from origin)
-                                        #   Negative: extend in -normal direction (toward origin)
                                         # In bidirectional mode: extend equally in both directions
                                         # Does NOT affect plane detection, only visualization
 
-    yz_plane_marker_bidirectional: true  # Thickness extension mode
-                                        # false: unidirectional - extend in one direction only (sign of thickness matters)
-                                        # true: bidirectional - extend equally in both ±normal directions (sign ignored)
+    pallet_marker_bidirectional: true   # Thickness extension mode
+                                        # false: unidirectional - extend in one direction only
+                                        # true: bidirectional - extend equally in both ±normal directions
