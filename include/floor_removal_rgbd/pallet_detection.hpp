@@ -12,62 +12,54 @@ namespace floor_removal_rgbd
 {
 
 /**
- * @brief Parameters for YZ plane (wall) detection
+ * @brief Parameters for line-based pallet detection
  */
 struct PalletDetectionParams
 {
-  // RANSAC parameters for YZ plane detection
-  double distance_threshold = 0.02;    // meters - points within this distance are inliers
-  int max_iterations = 100;            // maximum RANSAC iterations
-  double normal_x_threshold = 0.7;     // minimum X component of normal (perpendicular to X axis)
-
-  // Clustering parameters
-  double cluster_tolerance = 0.10;     // meters - distance between clusters
-  int min_cluster_size = 50;           // minimum points in a cluster
-  int max_cluster_size = 25000;        // maximum points in a cluster
-  int min_plane_inliers = 30;          // minimum inliers to consider a valid plane
+  // Line extraction parameters
+  double line_distance_threshold = 0.02;   // meters - distance threshold for line fitting
+  int line_min_points = 20;                // minimum points to form a line
+  int line_max_iterations = 100;           // maximum RANSAC iterations for line fitting
+  double line_merge_angle_threshold = 5.0; // degrees - merge lines within this angle
+  double line_merge_distance_threshold = 0.1; // meters - merge lines within this distance
+  double line_min_length = 0.3;            // meters - minimum line length to keep
 
   // Visualization marker parameters
-  double marker_thickness = 0.0;       // meters - thickness extension amount
-  bool marker_bidirectional = false;   // true: extend equally in both directions
-                                       // false: extend in one direction only
+  double marker_thickness = 0.02;          // meters - line marker thickness
+  double marker_height = 0.5;              // meters - line marker height above floor
 };
 
 /**
- * @brief Detected YZ plane information
+ * @brief Detected 2D line information
  */
-struct DetectedPlane
+struct DetectedLine
 {
-  // Plane equation: nx*x + ny*y + nz*z + d = 0
-  double nx, ny, nz, d;
+  // Line endpoints in 2D (on floor plane)
+  double start_x, start_y;
+  double end_x, end_y;
 
-  // Plane bounds (in plane coordinate system)
-  float min_u, max_u;  // extent along plane X-axis
-  float min_v, max_v;  // extent along plane Y-axis
+  // Line equation: ax + by + c = 0
+  double a, b, c;
 
-  // Plane coordinate system
-  float center_x, center_y, center_z;
-  float axis_x[3], axis_y[3], normal[3];
+  // Line length
+  double length;
 
-  // Points belonging to this plane
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr plane_cloud;
+  // Line angle (radians, relative to X-axis)
+  double angle;
 
-  // Number of inliers
+  // Number of inlier points
   size_t num_inliers;
 
-  DetectedPlane()
-    : nx(0), ny(0), nz(0), d(0)
-    , min_u(0), max_u(0), min_v(0), max_v(0)
-    , center_x(0), center_y(0), center_z(0)
-    , plane_cloud(new pcl::PointCloud<pcl::PointXYZRGB>)
+  // Points belonging to this line
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr line_cloud;
+
+  DetectedLine()
+    : start_x(0), start_y(0), end_x(0), end_y(0)
+    , a(0), b(0), c(0)
+    , length(0), angle(0)
     , num_inliers(0)
-  {
-    for (int i = 0; i < 3; ++i) {
-      axis_x[i] = 0;
-      axis_y[i] = 0;
-      normal[i] = 0;
-    }
-  }
+    , line_cloud(new pcl::PointCloud<pcl::PointXYZRGB>)
+  {}
 };
 
 /**
@@ -75,9 +67,9 @@ struct DetectedPlane
  */
 struct PalletDetectionResult
 {
-  std::vector<DetectedPlane> detected_planes;
+  std::vector<DetectedLine> detected_lines;
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr pallet_candidates;
-  visualization_msgs::msg::MarkerArray marker_array;
+  visualization_msgs::msg::MarkerArray line_markers;  // For /extracted_lines topic
 
   PalletDetectionResult()
     : pallet_candidates(new pcl::PointCloud<pcl::PointXYZRGB>)
@@ -85,11 +77,11 @@ struct PalletDetectionResult
 };
 
 /**
- * @brief Detector for pallet walls using YZ plane detection
+ * @brief Detector for pallet walls using 2D line extraction
  *
- * This class detects vertical walls (YZ planes) in point clouds using
- * Euclidean clustering and RANSAC plane fitting. It's designed to work
- * with point clouds in robot frame (X=forward, Y=left, Z=up).
+ * This class detects lines in 2D projected point clouds (floor plane)
+ * using incremental RANSAC-based line fitting. It's designed to work
+ * with 2D projected point clouds where Z=0 (on floor plane).
  */
 class PalletDetection
 {
@@ -101,13 +93,13 @@ public:
   explicit PalletDetection(const PalletDetectionParams& params = PalletDetectionParams());
 
   /**
-   * @brief Detect YZ planes (walls) in a point cloud
-   * @param cloud Input point cloud (typically no-floor points in robot frame)
+   * @brief Detect lines in 2D projected point cloud
+   * @param cloud_2d Input 2D point cloud (Z should be 0 or near 0)
    * @param frame_id Frame ID for marker visualization
-   * @return Detection result with detected planes and pallet candidates
+   * @return Detection result with detected lines and visualization markers
    */
   PalletDetectionResult detect(
-    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud_2d,
     const std::string& frame_id);
 
   /**
@@ -124,57 +116,62 @@ public:
 
 private:
   /**
-   * @brief Perform Euclidean clustering on point cloud
-   * @param cloud Input cloud
-   * @return Vector of point indices for each cluster
+   * @brief Extract lines from 2D point cloud using incremental RANSAC
+   * @param cloud_2d Input 2D cloud
+   * @return Vector of detected lines
    */
-  std::vector<pcl::PointIndices> performClustering(
-    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud);
+  std::vector<DetectedLine> extractLines(
+    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud_2d);
 
   /**
-   * @brief Detect YZ plane in a single cluster
-   * @param cluster_cloud Cluster point cloud
-   * @param plane Output detected plane (if successful)
-   * @return True if valid plane detected
+   * @brief Fit a line to a set of 2D points using RANSAC
+   * @param cloud_2d Input cloud
+   * @param indices Indices of points to consider
+   * @param line Output detected line
+   * @return True if line detected successfully
    */
-  bool detectPlaneInCluster(
-    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cluster_cloud,
-    DetectedPlane& plane);
+  bool fitLineRANSAC(
+    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud_2d,
+    const std::vector<int>& indices,
+    DetectedLine& line);
 
   /**
-   * @brief Calculate plane bounds and coordinate system
-   * @param plane_cloud Points belonging to the plane
-   * @param nx, ny, nz Plane normal components
-   * @param d Plane distance
-   * @param plane Output plane with calculated bounds
+   * @brief Merge similar lines (nearby and parallel)
+   * @param lines Input lines
+   * @return Merged lines
    */
-  void calculatePlaneBounds(
-    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& plane_cloud,
-    double nx, double ny, double nz, double d,
-    DetectedPlane& plane);
+  std::vector<DetectedLine> mergeLines(
+    const std::vector<DetectedLine>& lines);
 
   /**
-   * @brief Extract pallet candidate points within plane thickness
-   * @param cloud Full point cloud
-   * @param plane Detected plane
-   * @param candidates Output candidate points
+   * @brief Check if two lines should be merged
+   * @param line1 First line
+   * @param line2 Second line
+   * @return True if lines should be merged
    */
-  void extractPalletCandidates(
-    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
-    const DetectedPlane& plane,
-    pcl::PointCloud<pcl::PointXYZRGB>::Ptr& candidates);
+  bool shouldMergeLines(
+    const DetectedLine& line1,
+    const DetectedLine& line2);
 
   /**
-   * @brief Create visualization marker for a detected plane
-   * @param plane Detected plane
+   * @brief Create visualization marker for a detected line
+   * @param line Detected line
    * @param marker_id Marker ID
    * @param frame_id Frame ID
    * @return Visualization marker
    */
-  visualization_msgs::msg::Marker createPlaneMarker(
-    const DetectedPlane& plane,
+  visualization_msgs::msg::Marker createLineMarker(
+    const DetectedLine& line,
     int marker_id,
     const std::string& frame_id);
+
+  /**
+   * @brief Calculate distance from point to line
+   * @param px, py Point coordinates
+   * @param a, b, c Line equation coefficients
+   * @return Distance from point to line
+   */
+  double pointToLineDistance(double px, double py, double a, double b, double c);
 
   PalletDetectionParams params_;
 };

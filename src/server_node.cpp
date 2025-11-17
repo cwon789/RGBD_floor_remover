@@ -45,24 +45,22 @@ FloorRemovalServerNode::FloorRemovalServerNode()
 
   if (enable_pallet_detection_) {
     PalletDetectionParams pallet_params;
-    pallet_params.distance_threshold = this->get_parameter("pallet_distance_threshold").as_double();
-    pallet_params.max_iterations = this->get_parameter("pallet_max_iterations").as_int();
-    pallet_params.normal_x_threshold = this->get_parameter("pallet_normal_x_threshold").as_double();
-    pallet_params.cluster_tolerance = this->get_parameter("pallet_cluster_tolerance").as_double();
-    pallet_params.min_cluster_size = this->get_parameter("pallet_min_cluster_size").as_int();
-    pallet_params.max_cluster_size = this->get_parameter("pallet_max_cluster_size").as_int();
-    pallet_params.min_plane_inliers = this->get_parameter("pallet_min_plane_inliers").as_int();
+    pallet_params.line_distance_threshold = this->get_parameter("pallet_line_distance_threshold").as_double();
+    pallet_params.line_min_points = this->get_parameter("pallet_line_min_points").as_int();
+    pallet_params.line_max_iterations = this->get_parameter("pallet_line_max_iterations").as_int();
+    pallet_params.line_merge_angle_threshold = this->get_parameter("pallet_line_merge_angle_threshold").as_double();
+    pallet_params.line_merge_distance_threshold = this->get_parameter("pallet_line_merge_distance_threshold").as_double();
+    pallet_params.line_min_length = this->get_parameter("pallet_line_min_length").as_double();
     pallet_params.marker_thickness = this->get_parameter("pallet_marker_thickness").as_double();
-    pallet_params.marker_bidirectional = this->get_parameter("pallet_marker_bidirectional").as_bool();
+    pallet_params.marker_height = this->get_parameter("pallet_marker_height").as_double();
 
     pallet_detection_ = std::make_unique<PalletDetection>(pallet_params);
 
-    RCLCPP_INFO(this->get_logger(), "[PALLET] Pallet detection enabled");
-    RCLCPP_INFO(this->get_logger(), "[PALLET]   Distance threshold: %.3f m", pallet_params.distance_threshold);
-    RCLCPP_INFO(this->get_logger(), "[PALLET]   Normal X threshold: %.3f", pallet_params.normal_x_threshold);
-    RCLCPP_INFO(this->get_logger(), "[PALLET]   Marker thickness: %.3f m (%s)",
-                pallet_params.marker_thickness,
-                pallet_params.marker_bidirectional ? "bidirectional" : "unidirectional");
+    RCLCPP_INFO(this->get_logger(), "[PALLET] Pallet detection enabled (2D line extraction)");
+    RCLCPP_INFO(this->get_logger(), "[PALLET]   Line distance threshold: %.3f m", pallet_params.line_distance_threshold);
+    RCLCPP_INFO(this->get_logger(), "[PALLET]   Min points per line: %d", pallet_params.line_min_points);
+    RCLCPP_INFO(this->get_logger(), "[PALLET]   Min line length: %.3f m", pallet_params.line_min_length);
+    RCLCPP_INFO(this->get_logger(), "[PALLET]   Marker height: %.3f m", pallet_params.marker_height);
   }
 
   // TF2
@@ -93,8 +91,8 @@ FloorRemovalServerNode::FloorRemovalServerNode()
 
   // Pallet detection publishers
   if (enable_pallet_detection_) {
-    yz_plane_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
-      "/yz_plane_markers", 10);
+    extracted_lines_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
+      "/extracted_lines", 10);
     pallet_candidates_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
       "/pallet_candidates", 10);
   }
@@ -162,17 +160,16 @@ void FloorRemovalServerNode::declareParameters()
   this->declare_parameter<double>("cam_pitch", 0.0);
   this->declare_parameter<double>("cam_yaw", 0.0);
 
-  // Pallet detection parameters
+  // Pallet detection parameters (line-based)
   this->declare_parameter<bool>("enable_pallet_detection", true);
-  this->declare_parameter<double>("pallet_distance_threshold", 0.03);
-  this->declare_parameter<int>("pallet_max_iterations", 200);
-  this->declare_parameter<double>("pallet_normal_x_threshold", 0.3);
-  this->declare_parameter<double>("pallet_cluster_tolerance", 0.10);
-  this->declare_parameter<int>("pallet_min_cluster_size", 50);
-  this->declare_parameter<int>("pallet_max_cluster_size", 25000);
-  this->declare_parameter<int>("pallet_min_plane_inliers", 30);
+  this->declare_parameter<double>("pallet_line_distance_threshold", 0.02);
+  this->declare_parameter<int>("pallet_line_min_points", 20);
+  this->declare_parameter<int>("pallet_line_max_iterations", 100);
+  this->declare_parameter<double>("pallet_line_merge_angle_threshold", 5.0);
+  this->declare_parameter<double>("pallet_line_merge_distance_threshold", 0.1);
+  this->declare_parameter<double>("pallet_line_min_length", 0.3);
   this->declare_parameter<double>("pallet_marker_thickness", 0.02);
-  this->declare_parameter<bool>("pallet_marker_bidirectional", true);
+  this->declare_parameter<double>("pallet_marker_height", 0.5);
 }
 
 void FloorRemovalServerNode::loadParameters()
@@ -247,13 +244,19 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
     no_floor_cloud_voxelized_2d_projected_pub_->publish(no_floor_voxelized_2d_projected_msg);
   }
 
-  // Pallet detection (detect vertical walls using YZ plane detection)
-  if (enable_pallet_detection_ && pallet_detection_ && !result.no_floor_cloud_voxelized->points.empty()) {
-    auto pallet_result = pallet_detection_->detect(result.no_floor_cloud_voxelized, msg->header.frame_id);
+  // Pallet detection (line extraction from 2D projected cloud)
+  if (enable_pallet_detection_ && pallet_detection_ &&
+      result.no_floor_cloud_voxelized_2d_projected &&
+      !result.no_floor_cloud_voxelized_2d_projected->points.empty()) {
 
-    // Publish markers
-    if (!pallet_result.marker_array.markers.empty()) {
-      yz_plane_marker_pub_->publish(pallet_result.marker_array);
+    // Detect lines in 2D projected cloud
+    auto pallet_result = pallet_detection_->detect(
+      result.no_floor_cloud_voxelized_2d_projected,
+      msg->header.frame_id);
+
+    // Publish extracted line markers
+    if (!pallet_result.line_markers.markers.empty()) {
+      extracted_lines_pub_->publish(pallet_result.line_markers);
     }
 
     // Publish pallet candidates
