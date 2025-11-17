@@ -232,7 +232,18 @@ private:
    */
   double pointToLineDistance(double px, double py, double a, double b, double c);
 
+  /**
+   * @brief Disambiguate angle using previous angle (choose closest direction)
+   * @param angle Current angle
+   * @param prev_angle Previous angle
+   * @return Disambiguated angle (either angle or angle+π)
+   */
+  double disambiguateAngle(double angle, double prev_angle);
+
   PalletDetectionParams params_;
+
+  // Angle tracking for temporal consistency
+  std::vector<double> previous_angles_;  // Store previous angles for each detected line
 };
 
 }  // namespace floor_removal_rgbd

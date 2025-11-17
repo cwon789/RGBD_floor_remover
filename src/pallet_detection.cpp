@@ -54,6 +54,40 @@ PalletDetectionResult PalletDetection::detect(
   // Merge similar lines
   result.detected_lines = mergeLines(result.detected_lines);
 
+  // Disambiguate angles using previous frame data for temporal consistency
+  std::vector<double> current_angles;
+  for (auto& line : result.detected_lines) {
+    // Find closest previous angle by position
+    double best_prev_angle = 0.0;
+    bool found_previous = false;
+
+    if (!previous_angles_.empty()) {
+      // Use the first previous angle as reference (simple approach)
+      // In production, you'd match by position/distance
+      best_prev_angle = previous_angles_[0];
+      found_previous = true;
+    }
+
+    if (found_previous) {
+      // Disambiguate: choose angle or angle+π based on previous
+      double disambiguated = disambiguateAngle(line.angle, best_prev_angle);
+
+      // If angle changed, flip direction vector to maintain consistency
+      if (std::abs(disambiguated - line.angle) > M_PI / 2.0) {
+        // Swap start and end points
+        std::swap(line.start_x, line.end_x);
+        std::swap(line.start_y, line.end_y);
+      }
+
+      line.angle = disambiguated;
+    }
+
+    current_angles.push_back(line.angle);
+  }
+
+  // Update previous angles for next frame
+  previous_angles_ = current_angles;
+
   // Create visualization markers (lines and cuboids)
   for (size_t i = 0; i < result.detected_lines.size(); ++i) {
     // Line marker
@@ -286,6 +320,19 @@ bool PalletDetection::fitLineRANSAC(
   vx /= norm;
   vy /= norm;
 
+  // Normalize to forward direction [-π/2, π/2] to prevent 180-degree flip ambiguity
+  // This ensures consistent orientation across frames
+  double angle = std::atan2(vy, vx);
+  if (angle > M_PI / 2.0) {
+    angle -= M_PI;
+    vx = -vx;  // Flip direction vector
+    vy = -vy;
+  } else if (angle < -M_PI / 2.0) {
+    angle += M_PI;
+    vx = -vx;  // Flip direction vector
+    vy = -vy;
+  }
+
   // Line equation: perpendicular to direction
   line.a = -vy;
   line.b = vx;
@@ -320,8 +367,8 @@ bool PalletDetection::fitLineRANSAC(
   double dy = line.end_y - line.start_y;
   line.length = std::sqrt(dx*dx + dy*dy);
 
-  // Calculate angle (relative to X-axis)
-  line.angle = std::atan2(vy, vx);
+  // Store normalized angle
+  line.angle = angle;
 
   // Store inlier count
   line.num_inliers = best_inlier_indices.size();
@@ -613,6 +660,19 @@ std::vector<DetectedLine> PalletDetection::splitLongLine(
     vx /= norm;
     vy /= norm;
 
+    // Normalize to forward direction [-π/2, π/2] to prevent 180-degree flip ambiguity
+    // This ensures consistent orientation across frames
+    double angle = std::atan2(vy, vx);
+    if (angle > M_PI / 2.0) {
+      angle -= M_PI;
+      vx = -vx;  // Flip direction vector
+      vy = -vy;
+    } else if (angle < -M_PI / 2.0) {
+      angle += M_PI;
+      vx = -vx;  // Flip direction vector
+      vy = -vy;
+    }
+
     // Line equation: perpendicular to direction
     segment_line.a = -vy;
     segment_line.b = vx;
@@ -646,8 +706,9 @@ std::vector<DetectedLine> PalletDetection::splitLongLine(
     double seg_dy = segment_line.end_y - segment_line.start_y;
     segment_line.length = std::sqrt(seg_dx*seg_dx + seg_dy*seg_dy);
 
-    // Calculate angle
-    segment_line.angle = std::atan2(vy, vx);
+    // Store normalized angle
+    segment_line.angle = angle;
+
     segment_line.num_inliers = segment_cloud->points.size();
 
     split_lines.push_back(segment_line);
@@ -947,6 +1008,33 @@ bool PalletDetection::isPointInsideCuboid3D(
   double half_thickness = params_.cuboid_thickness / 2.0;
 
   return (std::abs(proj_along) <= half_length) && (std::abs(proj_perp) <= half_thickness);
+}
+
+double PalletDetection::disambiguateAngle(double angle, double prev_angle)
+{
+  // Normalize both angles to [-π, π]
+  auto normalize = [](double a) {
+    while (a > M_PI) a -= 2.0 * M_PI;
+    while (a < -M_PI) a += 2.0 * M_PI;
+    return a;
+  };
+
+  angle = normalize(angle);
+  prev_angle = normalize(prev_angle);
+
+  // Two possible directions: angle and angle+π
+  double angle_alt = angle + M_PI;
+  angle_alt = normalize(angle_alt);
+
+  // Choose the one closer to previous angle
+  double diff1 = std::abs(angle - prev_angle);
+  double diff2 = std::abs(angle_alt - prev_angle);
+
+  // Handle angle wrapping (e.g., -π vs +π)
+  if (diff1 > M_PI) diff1 = 2.0 * M_PI - diff1;
+  if (diff2 > M_PI) diff2 = 2.0 * M_PI - diff2;
+
+  return (diff1 < diff2) ? angle : angle_alt;
 }
 
 }  // namespace floor_removal_rgbd
