@@ -104,6 +104,8 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   if (enable_pallet_detection_) {
     extracted_lines_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
       "/extracted_lines", 10);
+    line_candidates_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
+      "/line_candidates", 10);
     pallet_candidates_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
       "/pallet_candidates", 10);
     pallet_cuboid_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
@@ -273,9 +275,11 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
       result.no_floor_cloud_voxelized_2d_projected &&
       !result.no_floor_cloud_voxelized_2d_projected->points.empty()) {
 
-    // Detect lines in 2D projected cloud
+    // Detect lines in 2D projected cloud and filter no_floor points inside cuboids
     auto pallet_result = pallet_detection_->detect(
       result.no_floor_cloud_voxelized_2d_projected,
+      result.no_floor_cloud_voxelized,  // Pass no_floor cloud to filter with cuboids
+      result.nx, result.ny, result.nz, result.d,  // Floor plane parameters
       msg->header.frame_id);
 
     // Publish extracted line markers
@@ -283,7 +287,15 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
       extracted_lines_pub_->publish(pallet_result.line_markers);
     }
 
-    // Publish pallet candidates
+    // Publish line candidates (2D line points)
+    if (!pallet_result.line_candidates->points.empty()) {
+      sensor_msgs::msg::PointCloud2 line_candidates_msg;
+      pcl::toROSMsg(*pallet_result.line_candidates, line_candidates_msg);
+      line_candidates_msg.header = msg->header;
+      line_candidates_pub_->publish(line_candidates_msg);
+    }
+
+    // Publish pallet candidates (floor points inside cuboids)
     if (!pallet_result.pallet_candidates->points.empty()) {
       sensor_msgs::msg::PointCloud2 pallet_candidates_msg;
       pcl::toROSMsg(*pallet_result.pallet_candidates, pallet_candidates_msg);

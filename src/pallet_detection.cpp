@@ -21,6 +21,8 @@ void PalletDetection::setParams(const PalletDetectionParams& params)
 
 PalletDetectionResult PalletDetection::detect(
   const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud_2d,
+  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& floor_cloud_3d,
+  double nx, double ny, double nz, double d,
   const std::string& frame_id)
 {
   PalletDetectionResult result;
@@ -31,6 +33,10 @@ PalletDetectionResult PalletDetection::detect(
   }
 
   std::cout << "[PalletDetection] Processing 2D cloud with " << cloud_2d->points.size() << " points" << std::endl;
+  std::cout << "[PalletDetection] Floor plane: nx=" << nx << ", ny=" << ny << ", nz=" << nz << ", d=" << d << std::endl;
+  if (floor_cloud_3d && !floor_cloud_3d->points.empty()) {
+    std::cout << "[PalletDetection] Floor cloud (3D) has " << floor_cloud_3d->points.size() << " points" << std::endl;
+  }
 
   // Preprocess: sort by angle and remove noise
   auto cloud_preprocessed = preprocessCloud(cloud_2d);
@@ -59,21 +65,43 @@ PalletDetectionResult PalletDetection::detect(
     result.cuboid_markers.markers.push_back(cuboid_marker);
   }
 
-  // Collect all line points as pallet candidates
+  // Collect all line points as line_candidates
   for (const auto& line : result.detected_lines) {
     for (const auto& pt : line.line_cloud->points) {
-      result.pallet_candidates->points.push_back(pt);
+      result.line_candidates->points.push_back(pt);
     }
   }
 
-  if (!result.pallet_candidates->points.empty()) {
-    result.pallet_candidates->width = result.pallet_candidates->points.size();
-    result.pallet_candidates->height = 1;
-    result.pallet_candidates->is_dense = false;
+  if (!result.line_candidates->points.empty()) {
+    result.line_candidates->width = result.line_candidates->points.size();
+    result.line_candidates->height = 1;
+    result.line_candidates->is_dense = false;
+  }
+
+  // Filter no_floor_cloud_3d points that are inside cuboids -> pallet_candidates
+  // no_floor_cloud_3d is already in the same coordinate system as cloud_2d (projected)
+  // So we can directly compare XY coordinates, just need to check Z height
+  if (floor_cloud_3d && !floor_cloud_3d->points.empty() && !result.detected_lines.empty()) {
+    for (const auto& pt : floor_cloud_3d->points) {
+      // Check if point is inside any cuboid (direct XY check + Z height check)
+      for (const auto& line : result.detected_lines) {
+        if (isPointInsideCuboid3D(pt, line)) {
+          result.pallet_candidates->points.push_back(pt);
+          break;  // Point belongs to this cuboid, no need to check others
+        }
+      }
+    }
+
+    if (!result.pallet_candidates->points.empty()) {
+      result.pallet_candidates->width = result.pallet_candidates->points.size();
+      result.pallet_candidates->height = 1;
+      result.pallet_candidates->is_dense = false;
+    }
   }
 
   std::cout << "[PalletDetection] Detected " << result.detected_lines.size() << " lines" << std::endl;
-  std::cout << "[PalletDetection] Total pallet candidates: " << result.pallet_candidates->points.size() << " points" << std::endl;
+  std::cout << "[PalletDetection] Total line candidates: " << result.line_candidates->points.size() << " points" << std::endl;
+  std::cout << "[PalletDetection] Total pallet candidates (in cuboids): " << result.pallet_candidates->points.size() << " points" << std::endl;
   std::cout << "[PalletDetection] Generated " << result.cuboid_markers.markers.size() << " cuboid markers" << std::endl;
 
   return result;
@@ -873,6 +901,52 @@ visualization_msgs::msg::Marker PalletDetection::createCuboidMarker(
   marker.lifetime = rclcpp::Duration::from_seconds(0.5);
 
   return marker;
+}
+
+bool PalletDetection::isPointInsideCuboid3D(
+  const pcl::PointXYZRGB& point,
+  const DetectedLine& line)
+{
+  // Check Z height first: cuboid extends from floor (Z≈0) up to cuboid_height
+  if (point.z < 0.0 || point.z > params_.cuboid_height) {
+    return false;
+  }
+
+  // Calculate line direction and perpendicular vectors
+  double dx = line.end_x - line.start_x;
+  double dy = line.end_y - line.start_y;
+  double line_len = std::sqrt(dx*dx + dy*dy);
+
+  if (line_len < 1e-6) {
+    return false;
+  }
+
+  double dir_x = dx / line_len;
+  double dir_y = dy / line_len;
+
+  // Perpendicular vector (to the left when facing along the line)
+  double perp_x = -dir_y;
+  double perp_y = dir_x;
+
+  // Line center
+  double center_x = (line.start_x + line.end_x) / 2.0;
+  double center_y = (line.start_y + line.end_y) / 2.0;
+
+  // Vector from center to point
+  double to_point_x = point.x - center_x;
+  double to_point_y = point.y - center_y;
+
+  // Project onto line direction (along the line)
+  double proj_along = to_point_x * dir_x + to_point_y * dir_y;
+
+  // Project onto perpendicular direction (thickness)
+  double proj_perp = to_point_x * perp_x + to_point_y * perp_y;
+
+  // Check if point is within cuboid bounds
+  double half_length = line.length / 2.0;
+  double half_thickness = params_.cuboid_thickness / 2.0;
+
+  return (std::abs(proj_along) <= half_length) && (std::abs(proj_perp) <= half_thickness);
 }
 
 }  // namespace floor_removal_rgbd

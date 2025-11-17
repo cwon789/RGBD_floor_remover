@@ -79,12 +79,14 @@ struct DetectedLine
 struct PalletDetectionResult
 {
   std::vector<DetectedLine> detected_lines;
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr pallet_candidates;
-  visualization_msgs::msg::MarkerArray line_markers;    // For /extracted_lines topic
-  visualization_msgs::msg::MarkerArray cuboid_markers;  // For /pallet_cuboid topic
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr line_candidates;   // Line points (2D projected)
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr pallet_candidates; // Floor points inside cuboids (3D)
+  visualization_msgs::msg::MarkerArray line_markers;        // For /extracted_lines topic
+  visualization_msgs::msg::MarkerArray cuboid_markers;      // For /pallet_cuboid topic
 
   PalletDetectionResult()
-    : pallet_candidates(new pcl::PointCloud<pcl::PointXYZRGB>)
+    : line_candidates(new pcl::PointCloud<pcl::PointXYZRGB>)
+    , pallet_candidates(new pcl::PointCloud<pcl::PointXYZRGB>)
   {}
 };
 
@@ -105,13 +107,18 @@ public:
   explicit PalletDetection(const PalletDetectionParams& params = PalletDetectionParams());
 
   /**
-   * @brief Detect lines in 2D projected point cloud
-   * @param cloud_2d Input 2D point cloud (Z should be 0 or near 0)
+   * @brief Detect lines in 2D projected point cloud and filter floor points inside cuboids
+   * @param cloud_2d Input 2D point cloud (projected onto floor plane)
+   * @param floor_cloud_3d Floor point cloud (3D, voxelized) to filter with cuboids
+   * @param nx, ny, nz Floor plane normal vector
+   * @param d Floor plane d coefficient (nx*x + ny*y + nz*z + d = 0)
    * @param frame_id Frame ID for marker visualization
    * @return Detection result with detected lines and visualization markers
    */
   PalletDetectionResult detect(
     const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud_2d,
+    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& floor_cloud_3d,
+    double nx, double ny, double nz, double d,
     const std::string& frame_id);
 
   /**
@@ -206,6 +213,16 @@ private:
     const DetectedLine& line,
     int marker_id,
     const std::string& frame_id);
+
+  /**
+   * @brief Check if a 3D point is inside the cuboid defined by a line
+   * @param point 3D point to check (in same coordinate system as detected lines)
+   * @param line Detected line defining the cuboid
+   * @return True if point is inside cuboid (XY and Z range check)
+   */
+  bool isPointInsideCuboid3D(
+    const pcl::PointXYZRGB& point,
+    const DetectedLine& line);
 
   /**
    * @brief Calculate distance from point to line
