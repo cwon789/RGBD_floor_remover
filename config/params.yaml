@@ -63,7 +63,7 @@ floor_removal_node:
     pallet_line_min_length: 0.8             # meters - minimum line length to keep
     pallet_line_max_length: 1.2             # meters - maximum line length (0 = no limit)
                                             # Lines longer than this will be split (prevents person+wall merging)
-    pallet_line_max_length_tolerance: 0.2   # meters - tolerance for max length check
+    pallet_line_max_length_tolerance: 0.1   # meters - tolerance for max length check
 
     # Preprocessing parameters (improve line detection quality)
     pallet_dbscan_eps: 0.05                 # meters - DBSCAN epsilon for noise removal
@@ -73,3 +73,7 @@ floor_removal_node:
     # Visualization marker parameters
     pallet_marker_thickness: 0.02           # meters - line marker thickness
     pallet_marker_height: 0.0               # meters - line marker height above floor
+
+    # Cuboid volume generation parameters
+    pallet_cuboid_height: 0.15               # meters - height to extend line upward (Z-axis)
+    pallet_cuboid_thickness: 0.15            # meters - thickness to extend line forward/backward (perpendicular to line)

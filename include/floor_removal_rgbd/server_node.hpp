@@ -63,6 +63,7 @@ private:
   // Pallet detection publishers
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr extracted_lines_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pallet_candidates_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pallet_cuboid_pub_;
 
   // TF2
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;

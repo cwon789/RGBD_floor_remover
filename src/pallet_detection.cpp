@@ -48,10 +48,15 @@ PalletDetectionResult PalletDetection::detect(
   // Merge similar lines
   result.detected_lines = mergeLines(result.detected_lines);
 
-  // Create visualization markers
+  // Create visualization markers (lines and cuboids)
   for (size_t i = 0; i < result.detected_lines.size(); ++i) {
-    auto marker = createLineMarker(result.detected_lines[i], i, frame_id);
-    result.line_markers.markers.push_back(marker);
+    // Line marker
+    auto line_marker = createLineMarker(result.detected_lines[i], i, frame_id);
+    result.line_markers.markers.push_back(line_marker);
+
+    // Cuboid marker
+    auto cuboid_marker = createCuboidMarker(result.detected_lines[i], i, frame_id);
+    result.cuboid_markers.markers.push_back(cuboid_marker);
   }
 
   // Collect all line points as pallet candidates
@@ -69,6 +74,7 @@ PalletDetectionResult PalletDetection::detect(
 
   std::cout << "[PalletDetection] Detected " << result.detected_lines.size() << " lines" << std::endl;
   std::cout << "[PalletDetection] Total pallet candidates: " << result.pallet_candidates->points.size() << " points" << std::endl;
+  std::cout << "[PalletDetection] Generated " << result.cuboid_markers.markers.size() << " cuboid markers" << std::endl;
 
   return result;
 }
@@ -438,7 +444,7 @@ double PalletDetection::pointToLineDistance(double px, double py, double a, doub
 }
 
 std::vector<DetectedLine> PalletDetection::splitLongLine(
-  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud_2d,
+  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& /* cloud_2d */,
   const DetectedLine& long_line)
 {
   std::vector<DetectedLine> split_lines;
@@ -817,6 +823,56 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr PalletDetection::preprocessCloud(
   std::cout << "[Preprocessing] Final point count: " << cloud_sorted->points.size() << std::endl;
 
   return cloud_sorted;
+}
+
+visualization_msgs::msg::Marker PalletDetection::createCuboidMarker(
+  const DetectedLine& line,
+  int marker_id,
+  const std::string& frame_id)
+{
+  visualization_msgs::msg::Marker marker;
+
+  marker.header.frame_id = frame_id;
+  marker.header.stamp = rclcpp::Clock().now();
+  marker.ns = "pallet_cuboids";
+  marker.id = marker_id;
+  marker.type = visualization_msgs::msg::Marker::CUBE;
+  marker.action = visualization_msgs::msg::Marker::ADD;
+
+  // Calculate line center point
+  double center_x = (line.start_x + line.end_x) / 2.0;
+  double center_y = (line.start_y + line.end_y) / 2.0;
+  double center_z = params_.cuboid_height / 2.0;  // Center at half height
+
+  marker.pose.position.x = center_x;
+  marker.pose.position.y = center_y;
+  marker.pose.position.z = center_z;
+
+  // Calculate orientation from line angle
+  // Line is in XY plane, so rotation is around Z axis
+  double yaw = line.angle;  // Line angle is already in radians
+
+  // Convert yaw to quaternion (rotation around Z axis)
+  // q = [cos(yaw/2), 0, 0, sin(yaw/2)]
+  marker.pose.orientation.x = 0.0;
+  marker.pose.orientation.y = 0.0;
+  marker.pose.orientation.z = std::sin(yaw / 2.0);
+  marker.pose.orientation.w = std::cos(yaw / 2.0);
+
+  // Set scale (dimensions of the box)
+  marker.scale.x = line.length;              // Length along the line
+  marker.scale.y = params_.cuboid_thickness;  // Thickness perpendicular to line
+  marker.scale.z = params_.cuboid_height;     // Height
+
+  // Set color (blue with less transparency)
+  marker.color.r = 0.0;
+  marker.color.g = 0.0;
+  marker.color.b = 1.0;
+  marker.color.a = 0.6;  // Less transparent (higher value = less transparent)
+
+  marker.lifetime = rclcpp::Duration::from_seconds(0.5);
+
+  return marker;
 }
 
 }  // namespace floor_removal_rgbd

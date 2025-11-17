@@ -34,6 +34,10 @@ struct PalletDetectionParams
   // Visualization marker parameters
   double marker_thickness = 0.02;          // meters - line marker thickness
   double marker_height = 0.5;              // meters - line marker height above floor
+
+  // Cuboid volume generation parameters
+  double cuboid_height = 1.0;              // meters - height to extend line upward (Z-axis)
+  double cuboid_thickness = 0.1;           // meters - thickness to extend line forward/backward (perpendicular to line)
 };
 
 /**
@@ -76,7 +80,8 @@ struct PalletDetectionResult
 {
   std::vector<DetectedLine> detected_lines;
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr pallet_candidates;
-  visualization_msgs::msg::MarkerArray line_markers;  // For /extracted_lines topic
+  visualization_msgs::msg::MarkerArray line_markers;    // For /extracted_lines topic
+  visualization_msgs::msg::MarkerArray cuboid_markers;  // For /pallet_cuboid topic
 
   PalletDetectionResult()
     : pallet_candidates(new pcl::PointCloud<pcl::PointXYZRGB>)
@@ -177,6 +182,18 @@ private:
   bool shouldMergeLines(
     const DetectedLine& line1,
     const DetectedLine& line2);
+
+  /**
+   * @brief Generate 3D cuboid marker from a 2D line
+   * @param line Detected 2D line on floor plane
+   * @param marker_id Marker ID
+   * @param frame_id Frame ID
+   * @return Visualization marker for cuboid
+   */
+  visualization_msgs::msg::Marker createCuboidMarker(
+    const DetectedLine& line,
+    int marker_id,
+    const std::string& frame_id);
 
   /**
    * @brief Create visualization marker for a detected line

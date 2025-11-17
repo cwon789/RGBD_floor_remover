@@ -61,6 +61,10 @@ FloorRemovalServerNode::FloorRemovalServerNode()
     pallet_params.dbscan_min_points = this->get_parameter("pallet_dbscan_min_points").as_int();
     pallet_params.angle_bin_size = this->get_parameter("pallet_angle_bin_size").as_double();
 
+    // Cuboid volume generation parameters
+    pallet_params.cuboid_height = this->get_parameter("pallet_cuboid_height").as_double();
+    pallet_params.cuboid_thickness = this->get_parameter("pallet_cuboid_thickness").as_double();
+
     pallet_detection_ = std::make_unique<PalletDetection>(pallet_params);
 
     RCLCPP_INFO(this->get_logger(), "[PALLET] Pallet detection enabled (2D line extraction)");
@@ -102,6 +106,8 @@ FloorRemovalServerNode::FloorRemovalServerNode()
       "/extracted_lines", 10);
     pallet_candidates_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
       "/pallet_candidates", 10);
+    pallet_cuboid_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
+      "/pallet_cuboid", 10);
   }
 
   RCLCPP_INFO(this->get_logger(), "Floor Removal Server Node initialized");
@@ -184,6 +190,10 @@ void FloorRemovalServerNode::declareParameters()
   this->declare_parameter<double>("pallet_dbscan_eps", 0.05);
   this->declare_parameter<int>("pallet_dbscan_min_points", 5);
   this->declare_parameter<double>("pallet_angle_bin_size", 0.5);
+
+  // Cuboid volume generation parameters
+  this->declare_parameter<double>("pallet_cuboid_height", 1.0);
+  this->declare_parameter<double>("pallet_cuboid_thickness", 0.1);
 }
 
 void FloorRemovalServerNode::loadParameters()
@@ -279,6 +289,11 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
       pcl::toROSMsg(*pallet_result.pallet_candidates, pallet_candidates_msg);
       pallet_candidates_msg.header = msg->header;
       pallet_candidates_pub_->publish(pallet_candidates_msg);
+    }
+
+    // Publish pallet cuboid markers
+    if (!pallet_result.cuboid_markers.markers.empty()) {
+      pallet_cuboid_pub_->publish(pallet_result.cuboid_markers);
     }
   }
 
