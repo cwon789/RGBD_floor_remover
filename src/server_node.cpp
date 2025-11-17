@@ -51,6 +51,8 @@ FloorRemovalServerNode::FloorRemovalServerNode()
     pallet_params.line_merge_angle_threshold = this->get_parameter("pallet_line_merge_angle_threshold").as_double();
     pallet_params.line_merge_distance_threshold = this->get_parameter("pallet_line_merge_distance_threshold").as_double();
     pallet_params.line_min_length = this->get_parameter("pallet_line_min_length").as_double();
+    pallet_params.line_max_length = this->get_parameter("pallet_line_max_length").as_double();
+    pallet_params.line_max_length_tolerance = this->get_parameter("pallet_line_max_length_tolerance").as_double();
     pallet_params.marker_thickness = this->get_parameter("pallet_marker_thickness").as_double();
     pallet_params.marker_height = this->get_parameter("pallet_marker_height").as_double();
 
@@ -173,6 +175,8 @@ void FloorRemovalServerNode::declareParameters()
   this->declare_parameter<double>("pallet_line_merge_angle_threshold", 5.0);
   this->declare_parameter<double>("pallet_line_merge_distance_threshold", 0.1);
   this->declare_parameter<double>("pallet_line_min_length", 0.3);
+  this->declare_parameter<double>("pallet_line_max_length", 2.0);
+  this->declare_parameter<double>("pallet_line_max_length_tolerance", 0.2);
   this->declare_parameter<double>("pallet_marker_thickness", 0.02);
   this->declare_parameter<double>("pallet_marker_height", 0.5);
 

@@ -23,6 +23,8 @@ struct PalletDetectionParams
   double line_merge_angle_threshold = 5.0; // degrees - merge lines within this angle
   double line_merge_distance_threshold = 0.1; // meters - merge lines within this distance
   double line_min_length = 0.3;            // meters - minimum line length to keep
+  double line_max_length = 2.0;            // meters - maximum line length (0 = no limit)
+  double line_max_length_tolerance = 0.2;  // meters - tolerance for max length check
 
   // Preprocessing parameters
   double dbscan_eps = 0.05;                // meters - DBSCAN epsilon for noise removal
@@ -155,6 +157,16 @@ private:
    */
   std::vector<DetectedLine> mergeLines(
     const std::vector<DetectedLine>& lines);
+
+  /**
+   * @brief Split a long line into multiple shorter segments by detecting gaps
+   * @param cloud_2d Input 2D cloud
+   * @param long_line Long line to split
+   * @return Vector of split line segments
+   */
+  std::vector<DetectedLine> splitLongLine(
+    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud_2d,
+    const DetectedLine& long_line);
 
   /**
    * @brief Check if two lines should be merged

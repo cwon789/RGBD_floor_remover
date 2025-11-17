@@ -89,13 +89,34 @@ std::vector<DetectedLine> PalletDetection::extractLines(
     DetectedLine line;
 
     if (fitLineRANSAC(cloud_2d, remaining_indices, line)) {
-      // Check minimum length
-      if (line.length >= params_.line_min_length) {
-        lines.push_back(line);
+      // Check minimum and maximum length
+      bool length_ok = (line.length >= params_.line_min_length);
 
-        std::cout << "[PalletDetection] Line " << lines.size()
-                  << ": length=" << line.length << "m, angle=" << (line.angle * 180.0 / M_PI)
-                  << "°, inliers=" << line.num_inliers << std::endl;
+      if (length_ok) {
+        // Check if line is too long (might be person + wall merged together)
+        if (params_.line_max_length > 0 && line.length > (params_.line_max_length + params_.line_max_length_tolerance)) {
+          std::cout << "[PalletDetection] Line too long (" << line.length
+                    << "m > " << (params_.line_max_length + params_.line_max_length_tolerance)
+                    << "m), attempting to split..." << std::endl;
+
+          // Try to split this line by finding gaps in the inlier points
+          auto split_lines = splitLongLine(cloud_2d, line);
+
+          for (const auto& split_line : split_lines) {
+            if (split_line.length >= params_.line_min_length &&
+                split_line.length <= (params_.line_max_length + params_.line_max_length_tolerance)) {
+              lines.push_back(split_line);
+              std::cout << "[PalletDetection] Split line " << lines.size()
+                        << ": length=" << split_line.length << "m, angle=" << (split_line.angle * 180.0 / M_PI)
+                        << "°, inliers=" << split_line.num_inliers << std::endl;
+            }
+          }
+        } else {
+          lines.push_back(line);
+          std::cout << "[PalletDetection] Line " << lines.size()
+                    << ": length=" << line.length << "m, angle=" << (line.angle * 180.0 / M_PI)
+                    << "°, inliers=" << line.num_inliers << std::endl;
+        }
       }
 
       // Remove inlier points from remaining indices
@@ -414,6 +435,191 @@ visualization_msgs::msg::Marker PalletDetection::createLineMarker(
 double PalletDetection::pointToLineDistance(double px, double py, double a, double b, double c)
 {
   return std::abs(a * px + b * py + c) / std::sqrt(a*a + b*b);
+}
+
+std::vector<DetectedLine> PalletDetection::splitLongLine(
+  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud_2d,
+  const DetectedLine& long_line)
+{
+  std::vector<DetectedLine> split_lines;
+
+  if (long_line.line_cloud->points.empty()) {
+    return split_lines;
+  }
+
+  // Step 1: Sort line points by projection along the line direction
+  struct PointProjection {
+    pcl::PointXYZRGB point;
+    double projection;
+    size_t original_idx;
+  };
+
+  // Calculate line direction vector
+  double dx = long_line.end_x - long_line.start_x;
+  double dy = long_line.end_y - long_line.start_y;
+  double line_len = std::sqrt(dx*dx + dy*dy);
+
+  if (line_len < 1e-6) {
+    return split_lines;
+  }
+
+  double dir_x = dx / line_len;
+  double dir_y = dy / line_len;
+
+  std::vector<PointProjection> projections;
+  projections.reserve(long_line.line_cloud->points.size());
+
+  for (size_t i = 0; i < long_line.line_cloud->points.size(); ++i) {
+    const auto& pt = long_line.line_cloud->points[i];
+    PointProjection pp;
+    pp.point = pt;
+    // Project point onto line direction from start point
+    pp.projection = (pt.x - long_line.start_x) * dir_x + (pt.y - long_line.start_y) * dir_y;
+    pp.original_idx = i;
+    projections.push_back(pp);
+  }
+
+  // Sort by projection
+  std::sort(projections.begin(), projections.end(),
+    [](const PointProjection& a, const PointProjection& b) {
+      return a.projection < b.projection;
+    });
+
+  // Step 2: Find gaps in the sorted points
+  // Gap threshold: if distance between consecutive points is too large, it's a gap
+  double gap_threshold = params_.dbscan_eps * 3.0; // Use 3x DBSCAN eps as gap threshold
+
+  std::vector<std::vector<size_t>> segments;
+  std::vector<size_t> current_segment;
+  current_segment.push_back(0);
+
+  for (size_t i = 1; i < projections.size(); ++i) {
+    double gap = projections[i].projection - projections[i-1].projection;
+
+    if (gap > gap_threshold) {
+      // Found a gap - save current segment and start new one
+      if (current_segment.size() >= static_cast<size_t>(params_.line_min_points)) {
+        segments.push_back(current_segment);
+      }
+      current_segment.clear();
+    }
+
+    current_segment.push_back(i);
+  }
+
+  // Don't forget the last segment
+  if (current_segment.size() >= static_cast<size_t>(params_.line_min_points)) {
+    segments.push_back(current_segment);
+  }
+
+  std::cout << "[SplitLine] Found " << segments.size() << " segments in long line" << std::endl;
+
+  // Step 3: Create a line for each segment
+  for (const auto& segment : segments) {
+    if (segment.size() < static_cast<size_t>(params_.line_min_points)) {
+      continue;
+    }
+
+    // Collect points for this segment
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr segment_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
+    segment_cloud->points.reserve(segment.size());
+
+    for (size_t idx : segment) {
+      segment_cloud->points.push_back(projections[idx].point);
+    }
+
+    segment_cloud->width = segment_cloud->points.size();
+    segment_cloud->height = 1;
+    segment_cloud->is_dense = false;
+
+    // Fit a line to this segment using least squares
+    DetectedLine segment_line;
+    segment_line.line_cloud = segment_cloud;
+
+    // Compute mean
+    double sum_x = 0, sum_y = 0;
+    double sum_xx = 0, sum_xy = 0, sum_yy = 0;
+
+    for (const auto& pt : segment_cloud->points) {
+      sum_x += pt.x;
+      sum_y += pt.y;
+      sum_xx += pt.x * pt.x;
+      sum_xy += pt.x * pt.y;
+      sum_yy += pt.y * pt.y;
+    }
+
+    int n = segment_cloud->points.size();
+    double mean_x = sum_x / n;
+    double mean_y = sum_y / n;
+
+    // Compute covariance matrix
+    double cov_xx = sum_xx / n - mean_x * mean_x;
+    double cov_xy = sum_xy / n - mean_x * mean_y;
+    double cov_yy = sum_yy / n - mean_y * mean_y;
+
+    // Compute principal direction (eigenvector of largest eigenvalue)
+    double trace = cov_xx + cov_yy;
+    double det = cov_xx * cov_yy - cov_xy * cov_xy;
+    double lambda = trace / 2.0 + std::sqrt(trace * trace / 4.0 - det);
+
+    double vx, vy;
+    if (std::abs(cov_xy) > 1e-6) {
+      vx = lambda - cov_yy;
+      vy = cov_xy;
+    } else if (std::abs(cov_xx - lambda) > 1e-6) {
+      vx = 1.0;
+      vy = 0.0;
+    } else {
+      vx = 0.0;
+      vy = 1.0;
+    }
+
+    // Normalize direction vector
+    double norm = std::sqrt(vx*vx + vy*vy);
+    vx /= norm;
+    vy /= norm;
+
+    // Line equation: perpendicular to direction
+    segment_line.a = -vy;
+    segment_line.b = vx;
+    segment_line.c = vy * mean_x - vx * mean_y;
+
+    // Normalize
+    norm = std::sqrt(segment_line.a*segment_line.a + segment_line.b*segment_line.b);
+    segment_line.a /= norm;
+    segment_line.b /= norm;
+    segment_line.c /= norm;
+
+    // Find endpoints (min/max projection on line direction)
+    double min_proj = std::numeric_limits<double>::max();
+    double max_proj = std::numeric_limits<double>::lowest();
+
+    for (const auto& pt : segment_cloud->points) {
+      double proj = vx * pt.x + vy * pt.y;
+      min_proj = std::min(min_proj, proj);
+      max_proj = std::max(max_proj, proj);
+    }
+
+    // Calculate endpoints
+    double center_proj = (min_proj + max_proj) / 2.0;
+    segment_line.start_x = mean_x + vx * (min_proj - center_proj);
+    segment_line.start_y = mean_y + vy * (min_proj - center_proj);
+    segment_line.end_x = mean_x + vx * (max_proj - center_proj);
+    segment_line.end_y = mean_y + vy * (max_proj - center_proj);
+
+    // Calculate line length
+    double seg_dx = segment_line.end_x - segment_line.start_x;
+    double seg_dy = segment_line.end_y - segment_line.start_y;
+    segment_line.length = std::sqrt(seg_dx*seg_dx + seg_dy*seg_dy);
+
+    // Calculate angle
+    segment_line.angle = std::atan2(vy, vx);
+    segment_line.num_inliers = segment_cloud->points.size();
+
+    split_lines.push_back(segment_line);
+  }
+
+  return split_lines;
 }
 
 pcl::PointCloud<pcl::PointXYZRGB>::Ptr PalletDetection::preprocessCloud(

@@ -1,9 +1,7 @@
 floor_removal_node:
   ros__parameters:
-    # Input topics
+    # Input/Output topics
     input_cloud_topic: "/lx_camera_node/LxCamera_Cloud"
-
-    # Output topics
     output_floor_cloud_topic: "/floor_cloud"
     output_no_floor_cloud_topic: "/no_floor_cloud"
     output_floor_cloud_voxelized_topic: "/floor_cloud_voxelized"
@@ -62,8 +60,16 @@ floor_removal_node:
     pallet_line_max_iterations: 100         # maximum RANSAC iterations for line fitting
     pallet_line_merge_angle_threshold: 5.0  # degrees - merge lines within this angle
     pallet_line_merge_distance_threshold: 0.1  # meters - merge lines within this distance
-    pallet_line_min_length: 0.3             # meters - minimum line length to keep
+    pallet_line_min_length: 0.8             # meters - minimum line length to keep
+    pallet_line_max_length: 1.2             # meters - maximum line length (0 = no limit)
+                                            # Lines longer than this will be split (prevents person+wall merging)
+    pallet_line_max_length_tolerance: 0.2   # meters - tolerance for max length check
+
+    # Preprocessing parameters (improve line detection quality)
+    pallet_dbscan_eps: 0.05                 # meters - DBSCAN epsilon for noise removal
+    pallet_dbscan_min_points: 5             # minimum points for DBSCAN cluster
+    pallet_angle_bin_size: 0.5              # degrees - angular resolution (like LaserScan)
 
     # Visualization marker parameters
     pallet_marker_thickness: 0.02           # meters - line marker thickness
-    pallet_marker_height: 0.5               # meters - line marker height above floor
+    pallet_marker_height: 0.0               # meters - line marker height above floor
