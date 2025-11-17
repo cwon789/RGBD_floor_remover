@@ -42,6 +42,7 @@ FloorRemovalServerNode::FloorRemovalServerNode()
 
   // Create PalletDetection with loaded parameters
   enable_pallet_detection_ = this->get_parameter("enable_pallet_detection").as_bool();
+  loosely_coupled_ = this->get_parameter("loosely_coupled").as_bool();
 
   if (enable_pallet_detection_) {
     PalletDetectionParams pallet_params;
@@ -72,6 +73,7 @@ FloorRemovalServerNode::FloorRemovalServerNode()
     RCLCPP_INFO(this->get_logger(), "[PALLET]   Min points per line: %d", pallet_params.line_min_points);
     RCLCPP_INFO(this->get_logger(), "[PALLET]   Min line length: %.3f m", pallet_params.line_min_length);
     RCLCPP_INFO(this->get_logger(), "[PALLET]   Marker height: %.3f m", pallet_params.marker_height);
+    RCLCPP_INFO(this->get_logger(), "[PALLET]   Loosely coupled: %s", loosely_coupled_ ? "true" : "false");
   }
 
   // TF2
@@ -110,6 +112,12 @@ FloorRemovalServerNode::FloorRemovalServerNode()
       "/pallet_candidates", 10);
     pallet_cuboid_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
       "/pallet_cuboid", 10);
+
+    // PoseStamped publisher for loosely coupled mode
+    if (loosely_coupled_) {
+      pallet_pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
+        "/pallet_pose", 10);
+    }
   }
 
   RCLCPP_INFO(this->get_logger(), "Floor Removal Server Node initialized");
@@ -177,6 +185,7 @@ void FloorRemovalServerNode::declareParameters()
 
   // Pallet detection parameters (line-based)
   this->declare_parameter<bool>("enable_pallet_detection", true);
+  this->declare_parameter<bool>("loosely_coupled", false);
   this->declare_parameter<double>("pallet_line_distance_threshold", 0.02);
   this->declare_parameter<int>("pallet_line_min_points", 20);
   this->declare_parameter<int>("pallet_line_max_iterations", 100);
@@ -306,6 +315,35 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
     // Publish pallet cuboid markers
     if (!pallet_result.cuboid_markers.markers.empty()) {
       pallet_cuboid_pub_->publish(pallet_result.cuboid_markers);
+    }
+
+    // Publish cuboid poses if loosely coupled mode is enabled
+    if (loosely_coupled_ && pallet_pose_pub_ && !pallet_result.detected_lines.empty()) {
+      // Publish each detected line as a PoseStamped
+      for (const auto& line : pallet_result.detected_lines) {
+        geometry_msgs::msg::PoseStamped pose_msg;
+        pose_msg.header = msg->header;
+
+        // Calculate line center point
+        double center_x = (line.start_x + line.end_x) / 2.0;
+        double center_y = (line.start_y + line.end_y) / 2.0;
+        double center_z = pallet_detection_->getParams().cuboid_height / 2.0;
+
+        pose_msg.pose.position.x = center_x;
+        pose_msg.pose.position.y = center_y;
+        pose_msg.pose.position.z = center_z;
+
+        // Calculate orientation from line angle (rotation around Z axis)
+        // Adjust angle: line.angle is relative to X-axis, add -π/2 to align with desired frame
+        // where X=forward(inward), Y=left, Z=up
+        double yaw = line.angle - M_PI / 2.0;
+        pose_msg.pose.orientation.x = 0.0;
+        pose_msg.pose.orientation.y = 0.0;
+        pose_msg.pose.orientation.z = std::sin(yaw / 2.0);
+        pose_msg.pose.orientation.w = std::cos(yaw / 2.0);
+
+        pallet_pose_pub_->publish(pose_msg);
+      }
     }
   }
 

@@ -6,6 +6,7 @@
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
 
@@ -65,6 +66,7 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr line_candidates_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pallet_candidates_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pallet_cuboid_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pallet_pose_pub_;
 
   // TF2
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -76,6 +78,7 @@ private:
 
   // Pallet detection enable flag
   bool enable_pallet_detection_;
+  bool loosely_coupled_;
 
   // Topic names
   std::string input_cloud_topic_;

@@ -53,6 +53,7 @@ floor_removal_node:
     # ========== Pallet Detection Parameters (Line-based) ==========
     # Extract lines from 2D projected point cloud for pallet detection
     enable_pallet_detection: true
+    loosely_coupled: true  # if true, publish cuboid poses as PoseStamped messages
 
     # Line extraction parameters
     pallet_line_distance_threshold: 0.02    # meters - distance threshold for line fitting
