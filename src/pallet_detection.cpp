@@ -122,7 +122,6 @@ bool PalletDetection::fitLineRANSAC(
   std::uniform_int_distribution<> dis(0, indices.size() - 1);
 
   int best_inliers = 0;
-  double best_a = 0, best_b = 0, best_c = 0;
   std::vector<int> best_inlier_indices;
 
   // RANSAC iterations
@@ -169,9 +168,6 @@ bool PalletDetection::fitLineRANSAC(
     // Update best model
     if (static_cast<int>(inlier_indices.size()) > best_inliers) {
       best_inliers = inlier_indices.size();
-      best_a = a;
-      best_b = b;
-      best_c = c;
       best_inlier_indices = inlier_indices;
     }
   }
