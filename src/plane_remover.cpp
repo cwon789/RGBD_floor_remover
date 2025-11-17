@@ -13,9 +13,6 @@ namespace floor_removal_rgbd
 PlaneRemover::PlaneRemover(const PlaneRemoverParams& params)
   : params_(params)
 {
-  // Initialize pallet detector with default parameters
-  PalletDetectorParams pallet_params;
-  pallet_detector_ = std::make_unique<PalletDetector>(pallet_params);
 }
 
 void PlaneRemover::setParams(const PlaneRemoverParams& params)

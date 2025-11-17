@@ -8,7 +8,6 @@
 #include <vector>
 #include <cstdint>
 #include <cstddef>
-#include "floor_removal_rgbd/pallet_detector.hpp"
 
 namespace floor_removal_rgbd
 {
@@ -65,8 +64,6 @@ struct PlaneRemovalResult
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr floor_cloud_voxelized;
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr no_floor_cloud_voxelized;
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr no_floor_cloud_voxelized_2d_projected;  // 2D projection of no_floor_cloud_voxelized
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr stringer_centers;
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr intersection_points;
 
   // Plane coefficients: nx*x + ny*y + nz*z + d = 0
   double nx, ny, nz, d;
@@ -85,8 +82,6 @@ struct PlaneRemovalResult
     , floor_cloud_voxelized(new pcl::PointCloud<pcl::PointXYZRGB>)
     , no_floor_cloud_voxelized(new pcl::PointCloud<pcl::PointXYZRGB>)
     , no_floor_cloud_voxelized_2d_projected(new pcl::PointCloud<pcl::PointXYZRGB>)
-    , stringer_centers(new pcl::PointCloud<pcl::PointXYZRGB>)
-    , intersection_points(new pcl::PointCloud<pcl::PointXYZRGB>)
     , nx(0), ny(0), nz(0), d(0)
   {}
 };
@@ -226,7 +221,6 @@ private:
     double nx, double ny, double nz, double d);
 
   PlaneRemoverParams params_;
-  std::unique_ptr<PalletDetector> pallet_detector_;
 };
 
 }  // namespace floor_removal_rgbd

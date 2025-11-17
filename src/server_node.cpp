@@ -92,15 +92,6 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   no_floor_cloud_voxelized_2d_projected_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
     "/no_floor_cloud_voxelized_2d_projected", 10);
 
-  stringer_markers_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
-    "/stringer_markers", 10);
-
-  stringer_centers_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
-    "/stringer_centers", 10);
-
-  intersection_points_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
-    "/intersection_points", 10);
-
   // YZ plane marker publisher
   if (enable_yz_plane_detection_) {
     yz_plane_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
@@ -171,10 +162,6 @@ void FloorRemovalServerNode::declareParameters()
   this->declare_parameter<double>("cam_roll", 0.0);
   this->declare_parameter<double>("cam_pitch", 0.0);
   this->declare_parameter<double>("cam_yaw", 0.0);
-
-  // Legacy parameters (kept for compatibility)
-  this->declare_parameter<double>("floor_height_min", -5.0);
-  this->declare_parameter<double>("floor_height_max", -0.3);
 
   // YZ plane detection parameters
   this->declare_parameter<bool>("enable_yz_plane_detection", true);
@@ -563,27 +550,6 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
       RCLCPP_INFO(this->get_logger(),
                   "[YZ PLANE DEBUG] Total planes detected: %d", plane_count);
     }
-  }
-
-  // Only process stringers if plane was found
-  if (!result.plane_found) {
-    return;
-  }
-
-  // Publish stringer centers
-  if (!result.stringer_centers->points.empty()) {
-    sensor_msgs::msg::PointCloud2 stringer_centers_msg;
-    pcl::toROSMsg(*result.stringer_centers, stringer_centers_msg);
-    stringer_centers_msg.header = msg->header;
-    stringer_centers_pub_->publish(stringer_centers_msg);
-  }
-
-  // Publish intersection points
-  if (!result.intersection_points->points.empty()) {
-    sensor_msgs::msg::PointCloud2 intersection_points_msg;
-    pcl::toROSMsg(*result.intersection_points, intersection_points_msg);
-    intersection_points_msg.header = msg->header;
-    intersection_points_pub_->publish(intersection_points_msg);
   }
 
 }
