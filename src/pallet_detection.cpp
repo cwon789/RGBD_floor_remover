@@ -1,14 +1,10 @@
 #include "floor_removal_rgbd/pallet_detection.hpp"
 
-#include <pcl/segmentation/sac_segmentation.h>
-#include <pcl/segmentation/extract_clusters.h>
-#include <pcl/filters/extract_indices.h>
-#include <pcl/kdtree/kdtree.h>
-#include <Eigen/Core>
-#include <Eigen/Geometry>
 #include <cmath>
 #include <limits>
 #include <iostream>
+#include <algorithm>
+#include <random>
 
 namespace floor_removal_rgbd
 {
@@ -24,352 +20,1021 @@ void PalletDetection::setParams(const PalletDetectionParams& params)
 }
 
 PalletDetectionResult PalletDetection::detect(
-  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud_2d,
+  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& floor_cloud_3d,
+  double nx, double ny, double nz, double d,
   const std::string& frame_id)
 {
   PalletDetectionResult result;
 
-  if (!cloud || cloud->points.empty()) {
+  if (!cloud_2d || cloud_2d->points.empty()) {
     std::cout << "[PalletDetection] Input cloud is empty" << std::endl;
     return result;
   }
 
-  // Step 1: Perform Euclidean clustering to separate objects
-  auto cluster_indices = performClustering(cloud);
+  std::cout << "[PalletDetection] Processing 2D cloud with " << cloud_2d->points.size() << " points" << std::endl;
+  std::cout << "[PalletDetection] Floor plane: nx=" << nx << ", ny=" << ny << ", nz=" << nz << ", d=" << d << std::endl;
+  if (floor_cloud_3d && !floor_cloud_3d->points.empty()) {
+    std::cout << "[PalletDetection] Floor cloud (3D) has " << floor_cloud_3d->points.size() << " points" << std::endl;
+  }
 
-  std::cout << "[PalletDetection] Found " << cluster_indices.size() << " clusters" << std::endl;
+  // Preprocess: sort by angle and remove noise
+  auto cloud_preprocessed = preprocessCloud(cloud_2d);
 
-  // Step 2: For each cluster, detect a YZ plane
-  int plane_count = 0;
-  for (size_t i = 0; i < cluster_indices.size(); ++i) {
-    // Extract cluster points
-    pcl::PointCloud<pcl::PointXYZRGB>::Ptr cluster_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
-    for (const auto& idx : cluster_indices[i].indices) {
-      cluster_cloud->points.push_back(cloud->points[idx]);
+  if (!cloud_preprocessed || cloud_preprocessed->points.empty()) {
+    std::cout << "[PalletDetection] Cloud is empty after preprocessing" << std::endl;
+    return result;
+  }
+
+  std::cout << "[PalletDetection] After preprocessing: " << cloud_preprocessed->points.size() << " points" << std::endl;
+
+  // Extract lines from preprocessed point cloud
+  result.detected_lines = extractLines(cloud_preprocessed);
+
+  // Merge similar lines
+  result.detected_lines = mergeLines(result.detected_lines);
+
+  // Disambiguate angles using previous frame data for temporal consistency
+  std::vector<double> current_angles;
+  for (auto& line : result.detected_lines) {
+    // Find closest previous angle by position
+    double best_prev_angle = 0.0;
+    bool found_previous = false;
+
+    if (!previous_angles_.empty()) {
+      // Use the first previous angle as reference (simple approach)
+      // In production, you'd match by position/distance
+      best_prev_angle = previous_angles_[0];
+      found_previous = true;
     }
-    cluster_cloud->width = cluster_cloud->points.size();
-    cluster_cloud->height = 1;
-    cluster_cloud->is_dense = true;
 
-    // Detect plane in this cluster
-    DetectedPlane plane;
-    if (detectPlaneInCluster(cluster_cloud, plane)) {
-      // Extract pallet candidate points within plane thickness
-      extractPalletCandidates(cloud, plane, result.pallet_candidates);
+    if (found_previous) {
+      // Disambiguate: choose angle or angle+π based on previous
+      double disambiguated = disambiguateAngle(line.angle, best_prev_angle);
 
-      // Create visualization marker
-      auto marker = createPlaneMarker(plane, plane_count, frame_id);
-      result.marker_array.markers.push_back(marker);
+      // If angle changed, flip direction vector to maintain consistency
+      if (std::abs(disambiguated - line.angle) > M_PI / 2.0) {
+        // Swap start and end points
+        std::swap(line.start_x, line.end_x);
+        std::swap(line.start_y, line.end_y);
+      }
 
-      result.detected_planes.push_back(plane);
+      line.angle = disambiguated;
+    }
 
-      std::cout << "[PalletDetection] Detected wall " << plane_count
-                << " (cluster " << i << "): normal=["
-                << plane.nx << ", " << plane.ny << ", " << plane.nz
-                << "], d=" << plane.d << ", inliers=" << plane.num_inliers << std::endl;
+    current_angles.push_back(line.angle);
+  }
 
-      plane_count++;
+  // Update previous angles for next frame
+  previous_angles_ = current_angles;
+
+  // Create visualization markers (lines and cuboids)
+  for (size_t i = 0; i < result.detected_lines.size(); ++i) {
+    // Line marker
+    auto line_marker = createLineMarker(result.detected_lines[i], i, frame_id);
+    result.line_markers.markers.push_back(line_marker);
+
+    // Cuboid marker
+    auto cuboid_marker = createCuboidMarker(result.detected_lines[i], i, frame_id);
+    result.cuboid_markers.markers.push_back(cuboid_marker);
+  }
+
+  // Collect all line points as line_candidates
+  for (const auto& line : result.detected_lines) {
+    for (const auto& pt : line.line_cloud->points) {
+      result.line_candidates->points.push_back(pt);
     }
   }
 
-  // Finalize pallet candidates cloud
-  if (!result.pallet_candidates->points.empty()) {
-    result.pallet_candidates->width = result.pallet_candidates->points.size();
-    result.pallet_candidates->height = 1;
-    result.pallet_candidates->is_dense = true;
+  if (!result.line_candidates->points.empty()) {
+    result.line_candidates->width = result.line_candidates->points.size();
+    result.line_candidates->height = 1;
+    result.line_candidates->is_dense = false;
   }
 
-  std::cout << "[PalletDetection] Total planes detected: " << plane_count << std::endl;
-  std::cout << "[PalletDetection] Pallet candidates: " << result.pallet_candidates->points.size()
-            << " points from " << plane_count << " planes" << std::endl;
+  // Filter no_floor_cloud_3d points that are inside cuboids -> pallet_candidates
+  // no_floor_cloud_3d is already in the same coordinate system as cloud_2d (projected)
+  // So we can directly compare XY coordinates, just need to check Z height
+  if (floor_cloud_3d && !floor_cloud_3d->points.empty() && !result.detected_lines.empty()) {
+    for (const auto& pt : floor_cloud_3d->points) {
+      // Check if point is inside any cuboid (direct XY check + Z height check)
+      for (const auto& line : result.detected_lines) {
+        if (isPointInsideCuboid3D(pt, line)) {
+          result.pallet_candidates->points.push_back(pt);
+          break;  // Point belongs to this cuboid, no need to check others
+        }
+      }
+    }
+
+    if (!result.pallet_candidates->points.empty()) {
+      result.pallet_candidates->width = result.pallet_candidates->points.size();
+      result.pallet_candidates->height = 1;
+      result.pallet_candidates->is_dense = false;
+    }
+  }
+
+  std::cout << "[PalletDetection] Detected " << result.detected_lines.size() << " lines" << std::endl;
+  std::cout << "[PalletDetection] Total line candidates: " << result.line_candidates->points.size() << " points" << std::endl;
+  std::cout << "[PalletDetection] Total pallet candidates (in cuboids): " << result.pallet_candidates->points.size() << " points" << std::endl;
+  std::cout << "[PalletDetection] Generated " << result.cuboid_markers.markers.size() << " cuboid markers" << std::endl;
 
   return result;
 }
 
-std::vector<pcl::PointIndices> PalletDetection::performClustering(
-  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud)
+std::vector<DetectedLine> PalletDetection::extractLines(
+  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud_2d)
 {
-  pcl::search::KdTree<pcl::PointXYZRGB>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZRGB>);
-  tree->setInputCloud(cloud);
+  std::vector<DetectedLine> lines;
 
-  std::vector<pcl::PointIndices> cluster_indices;
-  pcl::EuclideanClusterExtraction<pcl::PointXYZRGB> ec;
-  ec.setClusterTolerance(params_.cluster_tolerance);
-  ec.setMinClusterSize(params_.min_cluster_size);
-  ec.setMaxClusterSize(params_.max_cluster_size);
-  ec.setSearchMethod(tree);
-  ec.setInputCloud(cloud);
-  ec.extract(cluster_indices);
+  // Copy indices of all points
+  std::vector<int> remaining_indices;
+  for (size_t i = 0; i < cloud_2d->points.size(); ++i) {
+    remaining_indices.push_back(i);
+  }
 
-  return cluster_indices;
+  // Iteratively extract lines using RANSAC
+  while (remaining_indices.size() >= static_cast<size_t>(params_.line_min_points)) {
+    DetectedLine line;
+
+    if (fitLineRANSAC(cloud_2d, remaining_indices, line)) {
+      // Check minimum and maximum length
+      bool length_ok = (line.length >= params_.line_min_length);
+
+      if (length_ok) {
+        // Check if line is too long (might be person + wall merged together)
+        if (params_.line_max_length > 0 && line.length > (params_.line_max_length + params_.line_max_length_tolerance)) {
+          std::cout << "[PalletDetection] Line too long (" << line.length
+                    << "m > " << (params_.line_max_length + params_.line_max_length_tolerance)
+                    << "m), attempting to split..." << std::endl;
+
+          // Try to split this line by finding gaps in the inlier points
+          auto split_lines = splitLongLine(cloud_2d, line);
+
+          for (const auto& split_line : split_lines) {
+            if (split_line.length >= params_.line_min_length &&
+                split_line.length <= (params_.line_max_length + params_.line_max_length_tolerance)) {
+              lines.push_back(split_line);
+              std::cout << "[PalletDetection] Split line " << lines.size()
+                        << ": length=" << split_line.length << "m, angle=" << (split_line.angle * 180.0 / M_PI)
+                        << "°, inliers=" << split_line.num_inliers << std::endl;
+            }
+          }
+        } else {
+          lines.push_back(line);
+          std::cout << "[PalletDetection] Line " << lines.size()
+                    << ": length=" << line.length << "m, angle=" << (line.angle * 180.0 / M_PI)
+                    << "°, inliers=" << line.num_inliers << std::endl;
+        }
+      }
+
+      // Remove inlier points from remaining indices
+      std::vector<int> new_remaining;
+      for (int idx : remaining_indices) {
+        const auto& pt = cloud_2d->points[idx];
+        double dist = pointToLineDistance(pt.x, pt.y, line.a, line.b, line.c);
+
+        if (dist > params_.line_distance_threshold) {
+          new_remaining.push_back(idx);
+        }
+      }
+      remaining_indices = new_remaining;
+    } else {
+      // Failed to find more lines
+      break;
+    }
+  }
+
+  return lines;
 }
 
-bool PalletDetection::detectPlaneInCluster(
-  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cluster_cloud,
-  DetectedPlane& plane)
+bool PalletDetection::fitLineRANSAC(
+  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud_2d,
+  const std::vector<int>& indices,
+  DetectedLine& line)
 {
-  // RANSAC plane segmentation with axis constraint
-  pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients);
-  pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
-
-  pcl::SACSegmentation<pcl::PointXYZRGB> seg;
-  seg.setOptimizeCoefficients(true);
-  seg.setModelType(pcl::SACMODEL_PERPENDICULAR_PLANE);
-  seg.setMethodType(pcl::SAC_RANSAC);
-  seg.setMaxIterations(params_.max_iterations);
-  seg.setDistanceThreshold(params_.distance_threshold);
-
-  // Set axis to X (looking for planes perpendicular to X axis)
-  Eigen::Vector3f axis(1.0, 0.0, 0.0);
-  seg.setAxis(axis);
-  seg.setEpsAngle(0.5);  // ~30 degrees tolerance
-
-  seg.setInputCloud(cluster_cloud);
-  seg.segment(*inliers, *coefficients);
-
-  // Check if enough inliers found
-  if (inliers->indices.size() < static_cast<size_t>(params_.min_plane_inliers)) {
+  if (indices.size() < 2) {
     return false;
   }
 
-  // Extract plane normal: ax + by + cz + d = 0
-  double nx = coefficients->values[0];
-  double ny = coefficients->values[1];
-  double nz = coefficients->values[2];
-  double d = coefficients->values[3];
+  std::random_device rd;
+  std::mt19937 gen(rd());
+  std::uniform_int_distribution<> dis(0, indices.size() - 1);
 
-  // Normalize the normal vector
-  double norm = std::sqrt(nx*nx + ny*ny + nz*nz);
-  nx /= norm;
-  ny /= norm;
-  nz /= norm;
-  d /= norm;
+  int best_inliers = 0;
+  std::vector<int> best_inlier_indices;
 
-  // Check if this is a YZ plane (normal should point in X direction)
-  if (std::fabs(nx) < params_.normal_x_threshold) {
+  // RANSAC iterations
+  for (int iter = 0; iter < params_.line_max_iterations; ++iter) {
+    // Sample two random points
+    int idx1 = dis(gen);
+    int idx2 = dis(gen);
+    if (idx1 == idx2) continue;
+
+    const auto& p1 = cloud_2d->points[indices[idx1]];
+    const auto& p2 = cloud_2d->points[indices[idx2]];
+
+    // Compute line equation: ax + by + c = 0
+    // From two points (x1,y1) and (x2,y2):
+    // (y2-y1)x - (x2-x1)y + (x2-x1)y1 - (y2-y1)x1 = 0
+    double dx = p2.x - p1.x;
+    double dy = p2.y - p1.y;
+
+    if (std::abs(dx) < 1e-6 && std::abs(dy) < 1e-6) {
+      continue;  // Same point
+    }
+
+    double a = dy;
+    double b = -dx;
+    double c = dx * p1.y - dy * p1.x;
+
+    // Normalize
+    double norm = std::sqrt(a*a + b*b);
+    a /= norm;
+    b /= norm;
+    c /= norm;
+
+    // Count inliers
+    std::vector<int> inlier_indices;
+    for (int idx : indices) {
+      const auto& pt = cloud_2d->points[idx];
+      double dist = std::abs(a * pt.x + b * pt.y + c);
+
+      if (dist <= params_.line_distance_threshold) {
+        inlier_indices.push_back(idx);
+      }
+    }
+
+    // Update best model
+    if (static_cast<int>(inlier_indices.size()) > best_inliers) {
+      best_inliers = inlier_indices.size();
+      best_inlier_indices = inlier_indices;
+    }
+  }
+
+  // Check if we found enough inliers
+  if (best_inliers < params_.line_min_points) {
     return false;
   }
 
-  // Extract inlier points
-  pcl::ExtractIndices<pcl::PointXYZRGB> extract;
-  extract.setInputCloud(cluster_cloud);
-  extract.setIndices(inliers);
-  extract.setNegative(false);
-  extract.filter(*(plane.plane_cloud));
+  // Refine line parameters using all inliers (least squares)
+  double sum_x = 0, sum_y = 0;
+  double sum_xx = 0, sum_xy = 0, sum_yy = 0;
 
-  if (plane.plane_cloud->points.empty()) {
-    return false;
+  for (int idx : best_inlier_indices) {
+    const auto& pt = cloud_2d->points[idx];
+    sum_x += pt.x;
+    sum_y += pt.y;
+    sum_xx += pt.x * pt.x;
+    sum_xy += pt.x * pt.y;
+    sum_yy += pt.y * pt.y;
   }
 
-  // Store plane coefficients
-  plane.nx = nx;
-  plane.ny = ny;
-  plane.nz = nz;
-  plane.d = d;
-  plane.num_inliers = inliers->indices.size();
+  int n = best_inlier_indices.size();
+  double mean_x = sum_x / n;
+  double mean_y = sum_y / n;
 
-  // Calculate plane bounds and coordinate system
-  calculatePlaneBounds(plane.plane_cloud, nx, ny, nz, d, plane);
+  // Compute covariance matrix
+  double cov_xx = sum_xx / n - mean_x * mean_x;
+  double cov_xy = sum_xy / n - mean_x * mean_y;
+  double cov_yy = sum_yy / n - mean_y * mean_y;
+
+  // Compute principal direction (eigenvector of largest eigenvalue)
+  double trace = cov_xx + cov_yy;
+  double det = cov_xx * cov_yy - cov_xy * cov_xy;
+  double lambda = trace / 2.0 + std::sqrt(trace * trace / 4.0 - det);
+
+  double vx, vy;
+  if (std::abs(cov_xy) > 1e-6) {
+    vx = lambda - cov_yy;
+    vy = cov_xy;
+  } else if (std::abs(cov_xx - lambda) > 1e-6) {
+    vx = 1.0;
+    vy = 0.0;
+  } else {
+    vx = 0.0;
+    vy = 1.0;
+  }
+
+  // Normalize direction vector
+  double norm = std::sqrt(vx*vx + vy*vy);
+  vx /= norm;
+  vy /= norm;
+
+  // Normalize to forward direction [-π/2, π/2] to prevent 180-degree flip ambiguity
+  // This ensures consistent orientation across frames
+  double angle = std::atan2(vy, vx);
+  if (angle > M_PI / 2.0) {
+    angle -= M_PI;
+    vx = -vx;  // Flip direction vector
+    vy = -vy;
+  } else if (angle < -M_PI / 2.0) {
+    angle += M_PI;
+    vx = -vx;  // Flip direction vector
+    vy = -vy;
+  }
+
+  // Line equation: perpendicular to direction
+  line.a = -vy;
+  line.b = vx;
+  line.c = vy * mean_x - vx * mean_y;
+
+  // Normalize
+  norm = std::sqrt(line.a*line.a + line.b*line.b);
+  line.a /= norm;
+  line.b /= norm;
+  line.c /= norm;
+
+  // Find endpoints (min/max projection on line direction)
+  double min_proj = std::numeric_limits<double>::max();
+  double max_proj = std::numeric_limits<double>::lowest();
+
+  for (int idx : best_inlier_indices) {
+    const auto& pt = cloud_2d->points[idx];
+    double proj = vx * pt.x + vy * pt.y;
+    min_proj = std::min(min_proj, proj);
+    max_proj = std::max(max_proj, proj);
+  }
+
+  // Calculate endpoints
+  double center_proj = (min_proj + max_proj) / 2.0;
+  line.start_x = mean_x + vx * (min_proj - center_proj);
+  line.start_y = mean_y + vy * (min_proj - center_proj);
+  line.end_x = mean_x + vx * (max_proj - center_proj);
+  line.end_y = mean_y + vy * (max_proj - center_proj);
+
+  // Calculate line length
+  double dx = line.end_x - line.start_x;
+  double dy = line.end_y - line.start_y;
+  line.length = std::sqrt(dx*dx + dy*dy);
+
+  // Store normalized angle
+  line.angle = angle;
+
+  // Store inlier count
+  line.num_inliers = best_inlier_indices.size();
+
+  // Store inlier points
+  for (int idx : best_inlier_indices) {
+    line.line_cloud->points.push_back(cloud_2d->points[idx]);
+  }
+  line.line_cloud->width = line.line_cloud->points.size();
+  line.line_cloud->height = 1;
+  line.line_cloud->is_dense = false;
 
   return true;
 }
 
-void PalletDetection::calculatePlaneBounds(
-  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& plane_cloud,
-  double nx, double ny, double nz, double d,
-  DetectedPlane& plane)
+std::vector<DetectedLine> PalletDetection::mergeLines(
+  const std::vector<DetectedLine>& lines)
 {
-  Eigen::Vector3f normal(nx, ny, nz);
-
-  // Calculate centroid of plane points
-  Eigen::Vector3f centroid(0.0f, 0.0f, 0.0f);
-  for (const auto& pt : plane_cloud->points) {
-    centroid.x() += pt.x;
-    centroid.y() += pt.y;
-    centroid.z() += pt.z;
-  }
-  centroid /= plane_cloud->points.size();
-
-  plane.center_x = centroid.x();
-  plane.center_y = centroid.y();
-  plane.center_z = centroid.z();
-
-  // Create plane coordinate system with stable orientation
-  Eigen::Vector3f y_axis;
-  if (std::abs(nx) > 0.9) {
-    // Normal is nearly parallel to X axis - YZ plane
-    // Force Y-axis to align with world Y
-    y_axis = Eigen::Vector3f(0.0f, 1.0f, 0.0f);
-  } else {
-    // For other orientations, project normal onto XY plane and get perpendicular
-    Eigen::Vector3f normal_xy(nx, ny, 0.0f);
-    float norm_xy = normal_xy.norm();
-    if (norm_xy > 0.01) {
-      y_axis = Eigen::Vector3f(-ny, nx, 0.0f) / norm_xy;
-    } else {
-      y_axis = Eigen::Vector3f(0.0f, 1.0f, 0.0f);
-    }
-  }
-  y_axis.normalize();
-
-  // X-axis is cross product of Y and Z (normal)
-  Eigen::Vector3f x_axis = y_axis.cross(normal);
-  x_axis.normalize();
-
-  // Recompute Y-axis to ensure orthogonality
-  y_axis = normal.cross(x_axis);
-  y_axis.normalize();
-
-  // Store coordinate system
-  plane.axis_x[0] = x_axis.x();
-  plane.axis_x[1] = x_axis.y();
-  plane.axis_x[2] = x_axis.z();
-
-  plane.axis_y[0] = y_axis.x();
-  plane.axis_y[1] = y_axis.y();
-  plane.axis_y[2] = y_axis.z();
-
-  plane.normal[0] = normal.x();
-  plane.normal[1] = normal.y();
-  plane.normal[2] = normal.z();
-
-  // Project all points onto the plane coordinate system to find bounds
-  float min_u = std::numeric_limits<float>::max();
-  float max_u = std::numeric_limits<float>::lowest();
-  float min_v = std::numeric_limits<float>::max();
-  float max_v = std::numeric_limits<float>::lowest();
-
-  for (const auto& pt : plane_cloud->points) {
-    Eigen::Vector3f point(pt.x, pt.y, pt.z);
-    Eigen::Vector3f relative = point - centroid;
-    float u = relative.dot(x_axis);
-    float v = relative.dot(y_axis);
-
-    min_u = std::min(min_u, u);
-    max_u = std::max(max_u, u);
-    min_v = std::min(min_v, v);
-    max_v = std::max(max_v, v);
+  if (lines.empty()) {
+    return lines;
   }
 
-  plane.min_u = min_u;
-  plane.max_u = max_u;
-  plane.min_v = min_v;
-  plane.max_v = max_v;
-}
+  std::vector<DetectedLine> merged_lines;
+  std::vector<bool> merged(lines.size(), false);
 
-void PalletDetection::extractPalletCandidates(
-  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
-  const DetectedPlane& plane,
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr& candidates)
-{
-  Eigen::Vector3f normal(plane.normal[0], plane.normal[1], plane.normal[2]);
-  Eigen::Vector3f centroid(plane.center_x, plane.center_y, plane.center_z);
-  Eigen::Vector3f x_axis(plane.axis_x[0], plane.axis_x[1], plane.axis_x[2]);
-  Eigen::Vector3f y_axis(plane.axis_y[0], plane.axis_y[1], plane.axis_y[2]);
+  for (size_t i = 0; i < lines.size(); ++i) {
+    if (merged[i]) continue;
 
-  float thickness_offset = static_cast<float>(params_.marker_thickness);
+    DetectedLine merged_line = lines[i];
+    std::vector<size_t> merge_group = {i};
 
-  for (const auto& pt : cloud->points) {
-    Eigen::Vector3f point(pt.x, pt.y, pt.z);
+    // Find all lines that should merge with this one
+    for (size_t j = i + 1; j < lines.size(); ++j) {
+      if (merged[j]) continue;
 
-    // Calculate signed distance from point to plane
-    float signed_distance = normal.dot(point) + plane.d;
-
-    // Check if point is within the thickness bounds
-    bool inside = false;
-    if (params_.marker_bidirectional) {
-      // Bidirectional: within ±(thickness/2) from detected plane
-      float half_thickness = std::abs(thickness_offset) / 2.0f;
-      inside = (std::abs(signed_distance) <= half_thickness + 0.01f);
-    } else {
-      // Unidirectional: within one-sided thickness
-      if (thickness_offset >= 0) {
-        inside = (signed_distance >= -0.01f && signed_distance <= thickness_offset + 0.01f);
-      } else {
-        inside = (signed_distance >= thickness_offset - 0.01f && signed_distance <= 0.01f);
+      if (shouldMergeLines(merged_line, lines[j])) {
+        merge_group.push_back(j);
+        merged[j] = true;
       }
     }
 
-    if (inside) {
-      // Check if point is within the plane's XY extent
-      Eigen::Vector3f relative = point - centroid;
-      float u = relative.dot(x_axis);
-      float v = relative.dot(y_axis);
-
-      float margin = 0.1f;  // 10cm margin
-      if (u >= plane.min_u - margin && u <= plane.max_u + margin &&
-          v >= plane.min_v - margin && v <= plane.max_v + margin) {
-        candidates->points.push_back(pt);
+    // If multiple lines were merged, recompute the merged line
+    if (merge_group.size() > 1) {
+      // Combine all points from merged lines
+      pcl::PointCloud<pcl::PointXYZRGB>::Ptr combined_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
+      for (size_t idx : merge_group) {
+        for (const auto& pt : lines[idx].line_cloud->points) {
+          combined_cloud->points.push_back(pt);
+        }
       }
+
+      // Create indices vector
+      std::vector<int> all_indices(combined_cloud->points.size());
+      std::iota(all_indices.begin(), all_indices.end(), 0);
+
+      // Refit line to combined points
+      if (fitLineRANSAC(combined_cloud, all_indices, merged_line)) {
+        merged_lines.push_back(merged_line);
+      }
+    } else {
+      merged_lines.push_back(merged_line);
     }
+
+    merged[i] = true;
   }
+
+  std::cout << "[PalletDetection] Merged " << lines.size() << " lines into " << merged_lines.size() << " lines" << std::endl;
+
+  return merged_lines;
 }
 
-visualization_msgs::msg::Marker PalletDetection::createPlaneMarker(
-  const DetectedPlane& plane,
+bool PalletDetection::shouldMergeLines(
+  const DetectedLine& line1,
+  const DetectedLine& line2)
+{
+  // Check angle difference
+  double angle_diff = std::abs(line1.angle - line2.angle);
+  // Normalize to [0, pi]
+  while (angle_diff > M_PI) angle_diff -= 2 * M_PI;
+  angle_diff = std::abs(angle_diff);
+  if (angle_diff > M_PI / 2) angle_diff = M_PI - angle_diff;
+
+  double angle_threshold_rad = params_.line_merge_angle_threshold * M_PI / 180.0;
+  if (angle_diff > angle_threshold_rad) {
+    return false;
+  }
+
+  // Check distance between lines (shortest distance between line segments)
+  // Use midpoints as representative points
+  double mid1_x = (line1.start_x + line1.end_x) / 2.0;
+  double mid1_y = (line1.start_y + line1.end_y) / 2.0;
+  double mid2_x = (line2.start_x + line2.end_x) / 2.0;
+  double mid2_y = (line2.start_y + line2.end_y) / 2.0;
+
+  // Distance from mid1 to line2
+  double dist1 = pointToLineDistance(mid1_x, mid1_y, line2.a, line2.b, line2.c);
+  // Distance from mid2 to line1
+  double dist2 = pointToLineDistance(mid2_x, mid2_y, line1.a, line1.b, line1.c);
+
+  double min_dist = std::min(dist1, dist2);
+
+  return min_dist <= params_.line_merge_distance_threshold;
+}
+
+visualization_msgs::msg::Marker PalletDetection::createLineMarker(
+  const DetectedLine& line,
   int marker_id,
   const std::string& frame_id)
 {
   visualization_msgs::msg::Marker marker;
   marker.header.frame_id = frame_id;
   marker.header.stamp = rclcpp::Clock().now();
-  marker.ns = "yz_plane";
+  marker.ns = "extracted_lines";
+  marker.id = marker_id;
+  marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+  marker.action = visualization_msgs::msg::Marker::ADD;
+
+  // Set line start and end points (with height above floor)
+  geometry_msgs::msg::Point p1, p2;
+  p1.x = line.start_x;
+  p1.y = line.start_y;
+  p1.z = params_.marker_height;
+
+  p2.x = line.end_x;
+  p2.y = line.end_y;
+  p2.z = params_.marker_height;
+
+  marker.points.push_back(p1);
+  marker.points.push_back(p2);
+
+  // Set line thickness
+  marker.scale.x = params_.marker_thickness;
+
+  // Color: green for detected lines
+  marker.color.r = 0.0;
+  marker.color.g = 1.0;
+  marker.color.b = 0.0;
+  marker.color.a = 1.0;
+
+  marker.lifetime = rclcpp::Duration::from_seconds(0.5);
+
+  return marker;
+}
+
+double PalletDetection::pointToLineDistance(double px, double py, double a, double b, double c)
+{
+  return std::abs(a * px + b * py + c) / std::sqrt(a*a + b*b);
+}
+
+std::vector<DetectedLine> PalletDetection::splitLongLine(
+  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& /* cloud_2d */,
+  const DetectedLine& long_line)
+{
+  std::vector<DetectedLine> split_lines;
+
+  if (long_line.line_cloud->points.empty()) {
+    return split_lines;
+  }
+
+  // Step 1: Sort line points by projection along the line direction
+  struct PointProjection {
+    pcl::PointXYZRGB point;
+    double projection;
+    size_t original_idx;
+  };
+
+  // Calculate line direction vector
+  double dx = long_line.end_x - long_line.start_x;
+  double dy = long_line.end_y - long_line.start_y;
+  double line_len = std::sqrt(dx*dx + dy*dy);
+
+  if (line_len < 1e-6) {
+    return split_lines;
+  }
+
+  double dir_x = dx / line_len;
+  double dir_y = dy / line_len;
+
+  std::vector<PointProjection> projections;
+  projections.reserve(long_line.line_cloud->points.size());
+
+  for (size_t i = 0; i < long_line.line_cloud->points.size(); ++i) {
+    const auto& pt = long_line.line_cloud->points[i];
+    PointProjection pp;
+    pp.point = pt;
+    // Project point onto line direction from start point
+    pp.projection = (pt.x - long_line.start_x) * dir_x + (pt.y - long_line.start_y) * dir_y;
+    pp.original_idx = i;
+    projections.push_back(pp);
+  }
+
+  // Sort by projection
+  std::sort(projections.begin(), projections.end(),
+    [](const PointProjection& a, const PointProjection& b) {
+      return a.projection < b.projection;
+    });
+
+  // Step 2: Find gaps in the sorted points
+  // Gap threshold: if distance between consecutive points is too large, it's a gap
+  double gap_threshold = params_.dbscan_eps * 3.0; // Use 3x DBSCAN eps as gap threshold
+
+  std::vector<std::vector<size_t>> segments;
+  std::vector<size_t> current_segment;
+  current_segment.push_back(0);
+
+  for (size_t i = 1; i < projections.size(); ++i) {
+    double gap = projections[i].projection - projections[i-1].projection;
+
+    if (gap > gap_threshold) {
+      // Found a gap - save current segment and start new one
+      if (current_segment.size() >= static_cast<size_t>(params_.line_min_points)) {
+        segments.push_back(current_segment);
+      }
+      current_segment.clear();
+    }
+
+    current_segment.push_back(i);
+  }
+
+  // Don't forget the last segment
+  if (current_segment.size() >= static_cast<size_t>(params_.line_min_points)) {
+    segments.push_back(current_segment);
+  }
+
+  std::cout << "[SplitLine] Found " << segments.size() << " segments in long line" << std::endl;
+
+  // Step 3: Create a line for each segment
+  for (const auto& segment : segments) {
+    if (segment.size() < static_cast<size_t>(params_.line_min_points)) {
+      continue;
+    }
+
+    // Collect points for this segment
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr segment_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
+    segment_cloud->points.reserve(segment.size());
+
+    for (size_t idx : segment) {
+      segment_cloud->points.push_back(projections[idx].point);
+    }
+
+    segment_cloud->width = segment_cloud->points.size();
+    segment_cloud->height = 1;
+    segment_cloud->is_dense = false;
+
+    // Fit a line to this segment using least squares
+    DetectedLine segment_line;
+    segment_line.line_cloud = segment_cloud;
+
+    // Compute mean
+    double sum_x = 0, sum_y = 0;
+    double sum_xx = 0, sum_xy = 0, sum_yy = 0;
+
+    for (const auto& pt : segment_cloud->points) {
+      sum_x += pt.x;
+      sum_y += pt.y;
+      sum_xx += pt.x * pt.x;
+      sum_xy += pt.x * pt.y;
+      sum_yy += pt.y * pt.y;
+    }
+
+    int n = segment_cloud->points.size();
+    double mean_x = sum_x / n;
+    double mean_y = sum_y / n;
+
+    // Compute covariance matrix
+    double cov_xx = sum_xx / n - mean_x * mean_x;
+    double cov_xy = sum_xy / n - mean_x * mean_y;
+    double cov_yy = sum_yy / n - mean_y * mean_y;
+
+    // Compute principal direction (eigenvector of largest eigenvalue)
+    double trace = cov_xx + cov_yy;
+    double det = cov_xx * cov_yy - cov_xy * cov_xy;
+    double lambda = trace / 2.0 + std::sqrt(trace * trace / 4.0 - det);
+
+    double vx, vy;
+    if (std::abs(cov_xy) > 1e-6) {
+      vx = lambda - cov_yy;
+      vy = cov_xy;
+    } else if (std::abs(cov_xx - lambda) > 1e-6) {
+      vx = 1.0;
+      vy = 0.0;
+    } else {
+      vx = 0.0;
+      vy = 1.0;
+    }
+
+    // Normalize direction vector
+    double norm = std::sqrt(vx*vx + vy*vy);
+    vx /= norm;
+    vy /= norm;
+
+    // Normalize to forward direction [-π/2, π/2] to prevent 180-degree flip ambiguity
+    // This ensures consistent orientation across frames
+    double angle = std::atan2(vy, vx);
+    if (angle > M_PI / 2.0) {
+      angle -= M_PI;
+      vx = -vx;  // Flip direction vector
+      vy = -vy;
+    } else if (angle < -M_PI / 2.0) {
+      angle += M_PI;
+      vx = -vx;  // Flip direction vector
+      vy = -vy;
+    }
+
+    // Line equation: perpendicular to direction
+    segment_line.a = -vy;
+    segment_line.b = vx;
+    segment_line.c = vy * mean_x - vx * mean_y;
+
+    // Normalize
+    norm = std::sqrt(segment_line.a*segment_line.a + segment_line.b*segment_line.b);
+    segment_line.a /= norm;
+    segment_line.b /= norm;
+    segment_line.c /= norm;
+
+    // Find endpoints (min/max projection on line direction)
+    double min_proj = std::numeric_limits<double>::max();
+    double max_proj = std::numeric_limits<double>::lowest();
+
+    for (const auto& pt : segment_cloud->points) {
+      double proj = vx * pt.x + vy * pt.y;
+      min_proj = std::min(min_proj, proj);
+      max_proj = std::max(max_proj, proj);
+    }
+
+    // Calculate endpoints
+    double center_proj = (min_proj + max_proj) / 2.0;
+    segment_line.start_x = mean_x + vx * (min_proj - center_proj);
+    segment_line.start_y = mean_y + vy * (min_proj - center_proj);
+    segment_line.end_x = mean_x + vx * (max_proj - center_proj);
+    segment_line.end_y = mean_y + vy * (max_proj - center_proj);
+
+    // Calculate line length
+    double seg_dx = segment_line.end_x - segment_line.start_x;
+    double seg_dy = segment_line.end_y - segment_line.start_y;
+    segment_line.length = std::sqrt(seg_dx*seg_dx + seg_dy*seg_dy);
+
+    // Store normalized angle
+    segment_line.angle = angle;
+
+    segment_line.num_inliers = segment_cloud->points.size();
+
+    split_lines.push_back(segment_line);
+  }
+
+  return split_lines;
+}
+
+pcl::PointCloud<pcl::PointXYZRGB>::Ptr PalletDetection::preprocessCloud(
+  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud_2d)
+{
+  if (!cloud_2d || cloud_2d->points.empty()) {
+    return pcl::PointCloud<pcl::PointXYZRGB>::Ptr(new pcl::PointCloud<pcl::PointXYZRGB>);
+  }
+
+  // Step 1: DBSCAN clustering to remove noise and isolated points
+  std::cout << "[Preprocessing] Running DBSCAN clustering..." << std::endl;
+
+  std::vector<int> labels(cloud_2d->points.size(), -1); // -1 = unclassified, -2 = noise
+  std::vector<bool> visited(cloud_2d->points.size(), false);
+  int cluster_id = 0;
+
+  double eps_sq = params_.dbscan_eps * params_.dbscan_eps;
+
+  // DBSCAN algorithm
+  for (size_t i = 0; i < cloud_2d->points.size(); ++i) {
+    if (visited[i]) continue;
+    visited[i] = true;
+
+    // Find neighbors
+    std::vector<size_t> neighbors;
+    const auto& point = cloud_2d->points[i];
+
+    for (size_t j = 0; j < cloud_2d->points.size(); ++j) {
+      if (i == j) continue;
+      const auto& other = cloud_2d->points[j];
+
+      double dx = point.x - other.x;
+      double dy = point.y - other.y;
+      double dist_sq = dx*dx + dy*dy;
+
+      if (dist_sq <= eps_sq) {
+        neighbors.push_back(j);
+      }
+    }
+
+    // Check if core point
+    if (static_cast<int>(neighbors.size()) < params_.dbscan_min_points) {
+      labels[i] = -2; // noise
+      continue;
+    }
+
+    // Expand cluster
+    labels[i] = cluster_id;
+    std::vector<size_t> seeds = neighbors;
+
+    for (size_t k = 0; k < seeds.size(); ++k) {
+      size_t idx = seeds[k];
+
+      if (!visited[idx]) {
+        visited[idx] = true;
+
+        // Find neighbors of this point
+        std::vector<size_t> neighbors2;
+        const auto& point2 = cloud_2d->points[idx];
+
+        for (size_t j = 0; j < cloud_2d->points.size(); ++j) {
+          if (idx == j) continue;
+          const auto& other = cloud_2d->points[j];
+
+          double dx = point2.x - other.x;
+          double dy = point2.y - other.y;
+          double dist_sq = dx*dx + dy*dy;
+
+          if (dist_sq <= eps_sq) {
+            neighbors2.push_back(j);
+          }
+        }
+
+        if (static_cast<int>(neighbors2.size()) >= params_.dbscan_min_points) {
+          // Add new neighbors to seeds
+          for (size_t n : neighbors2) {
+            if (labels[n] == -1 || labels[n] == -2) {
+              bool already_in_seeds = false;
+              for (size_t s : seeds) {
+                if (s == n) {
+                  already_in_seeds = true;
+                  break;
+                }
+              }
+              if (!already_in_seeds) {
+                seeds.push_back(n);
+              }
+            }
+          }
+        }
+      }
+
+      if (labels[idx] == -1 || labels[idx] == -2) {
+        labels[idx] = cluster_id;
+      }
+    }
+
+    cluster_id++;
+  }
+
+  // Count clusters
+  int num_noise = 0;
+  for (size_t i = 0; i < labels.size(); ++i) {
+    if (labels[i] == -2) num_noise++;
+  }
+
+  std::cout << "[Preprocessing] Found " << cluster_id << " clusters, removed " << num_noise << " noise points" << std::endl;
+
+  // Keep only points in clusters (not noise)
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZRGB>);
+  cloud_filtered->header = cloud_2d->header;
+  cloud_filtered->points.reserve(cloud_2d->points.size() - num_noise);
+
+  for (size_t i = 0; i < cloud_2d->points.size(); ++i) {
+    if (labels[i] >= 0) { // not noise
+      cloud_filtered->points.push_back(cloud_2d->points[i]);
+    }
+  }
+
+  if (cloud_filtered->points.empty()) {
+    std::cout << "[Preprocessing] Warning: All points classified as noise!" << std::endl;
+    return cloud_filtered;
+  }
+
+  // Step 2: Sort points by angle (like LaserScan)
+  std::cout << "[Preprocessing] Sorting points by angle..." << std::endl;
+
+  struct PointWithAngle {
+    pcl::PointXYZRGB point;
+    double angle;
+    double range;
+  };
+
+  std::vector<PointWithAngle> points_with_angles;
+  points_with_angles.reserve(cloud_filtered->points.size());
+
+  for (const auto& pt : cloud_filtered->points) {
+    PointWithAngle pwa;
+    pwa.point = pt;
+    pwa.angle = std::atan2(pt.y, pt.x);
+    pwa.range = std::sqrt(pt.x * pt.x + pt.y * pt.y);
+    points_with_angles.push_back(pwa);
+  }
+
+  // Sort by angle
+  std::sort(points_with_angles.begin(), points_with_angles.end(),
+    [](const PointWithAngle& a, const PointWithAngle& b) {
+      return a.angle < b.angle;
+    });
+
+  // Step 3: Angular binning - keep only closest point in each angular bin
+  std::cout << "[Preprocessing] Angular binning..." << std::endl;
+
+  double angle_bin_rad = params_.angle_bin_size * M_PI / 180.0;
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_sorted(new pcl::PointCloud<pcl::PointXYZRGB>);
+  cloud_sorted->header = cloud_2d->header;
+
+  if (points_with_angles.empty()) {
+    return cloud_sorted;
+  }
+
+  // Group by angular bins
+  double current_bin_start = points_with_angles[0].angle;
+  double min_range = points_with_angles[0].range;
+  size_t min_range_idx = 0;
+
+  for (size_t i = 0; i < points_with_angles.size(); ++i) {
+    const auto& pwa = points_with_angles[i];
+
+    // Check if still in same bin
+    if (pwa.angle - current_bin_start < angle_bin_rad) {
+      // Update minimum range point in this bin
+      if (pwa.range < min_range) {
+        min_range = pwa.range;
+        min_range_idx = i;
+      }
+    } else {
+      // Save the closest point from previous bin
+      cloud_sorted->points.push_back(points_with_angles[min_range_idx].point);
+
+      // Start new bin
+      current_bin_start = pwa.angle;
+      min_range = pwa.range;
+      min_range_idx = i;
+    }
+  }
+
+  // Add last bin's closest point
+  cloud_sorted->points.push_back(points_with_angles[min_range_idx].point);
+
+  cloud_sorted->width = cloud_sorted->points.size();
+  cloud_sorted->height = 1;
+  cloud_sorted->is_dense = false;
+
+  std::cout << "[Preprocessing] Final point count: " << cloud_sorted->points.size() << std::endl;
+
+  return cloud_sorted;
+}
+
+visualization_msgs::msg::Marker PalletDetection::createCuboidMarker(
+  const DetectedLine& line,
+  int marker_id,
+  const std::string& frame_id)
+{
+  visualization_msgs::msg::Marker marker;
+
+  marker.header.frame_id = frame_id;
+  marker.header.stamp = rclcpp::Clock().now();
+  marker.ns = "pallet_cuboids";
   marker.id = marker_id;
   marker.type = visualization_msgs::msg::Marker::CUBE;
   marker.action = visualization_msgs::msg::Marker::ADD;
 
-  // Apply thickness extension along the normal direction
-  float thickness_offset = static_cast<float>(params_.marker_thickness);
-  Eigen::Vector3f normal(plane.normal[0], plane.normal[1], plane.normal[2]);
-  Eigen::Vector3f centroid(plane.center_x, plane.center_y, plane.center_z);
+  // Calculate line center point
+  double center_x = (line.start_x + line.end_x) / 2.0;
+  double center_y = (line.start_y + line.end_y) / 2.0;
+  double center_z = params_.cuboid_height / 2.0;  // Center at half height
 
-  Eigen::Vector3f marker_center;
-  float marker_thickness;
+  marker.pose.position.x = center_x;
+  marker.pose.position.y = center_y;
+  marker.pose.position.z = center_z;
 
-  if (params_.marker_bidirectional) {
-    // Bidirectional: extend equally in both normal directions
-    marker_center = centroid;
-    marker_thickness = 0.02f + std::abs(thickness_offset);
-  } else {
-    // Unidirectional: extend in one direction only
-    marker_center = centroid + normal * (thickness_offset * 0.5f);
-    marker_thickness = 0.02f + std::abs(thickness_offset);
-  }
+  // Calculate orientation from line angle
+  // Line is in XY plane, so rotation is around Z axis
+  double yaw = line.angle;  // Line angle is already in radians
 
-  // Position at calculated center
-  marker.pose.position.x = marker_center.x();
-  marker.pose.position.y = marker_center.y();
-  marker.pose.position.z = marker_center.z();
+  // Convert yaw to quaternion (rotation around Z axis)
+  // q = [cos(yaw/2), 0, 0, sin(yaw/2)]
+  marker.pose.orientation.x = 0.0;
+  marker.pose.orientation.y = 0.0;
+  marker.pose.orientation.z = std::sin(yaw / 2.0);
+  marker.pose.orientation.w = std::cos(yaw / 2.0);
 
-  // Orientation: align marker's Z-axis with plane normal
-  Eigen::Vector3f x_axis(plane.axis_x[0], plane.axis_x[1], plane.axis_x[2]);
-  Eigen::Vector3f y_axis(plane.axis_y[0], plane.axis_y[1], plane.axis_y[2]);
+  // Set scale (dimensions of the box)
+  marker.scale.x = line.length;              // Length along the line
+  marker.scale.y = params_.cuboid_thickness;  // Thickness perpendicular to line
+  marker.scale.z = params_.cuboid_height;     // Height
 
-  Eigen::Matrix3f rotation;
-  rotation.col(0) = x_axis;
-  rotation.col(1) = y_axis;
-  rotation.col(2) = normal;
-
-  Eigen::Quaternionf quat(rotation);
-  marker.pose.orientation.x = quat.x();
-  marker.pose.orientation.y = quat.y();
-  marker.pose.orientation.z = quat.z();
-  marker.pose.orientation.w = quat.w();
-
-  // Size based on plane extent
-  marker.scale.x = std::max(0.1f, plane.max_u - plane.min_u);
-  marker.scale.y = std::max(0.1f, plane.max_v - plane.min_v);
-  marker.scale.z = marker_thickness;
-
-  // Blue color for YZ planes
+  // Set color (blue with less transparency)
   marker.color.r = 0.0;
-  marker.color.g = 0.5;
+  marker.color.g = 0.0;
   marker.color.b = 1.0;
-  marker.color.a = 0.5;
+  marker.color.a = 0.6;  // Less transparent (higher value = less transparent)
 
-  marker.lifetime = rclcpp::Duration::from_seconds(2.0);
+  marker.lifetime = rclcpp::Duration::from_seconds(0.5);
 
   return marker;
+}
+
+bool PalletDetection::isPointInsideCuboid3D(
+  const pcl::PointXYZRGB& point,
+  const DetectedLine& line)
+{
+  // Check Z height first: cuboid extends from floor (Z≈0) up to cuboid_height
+  if (point.z < 0.0 || point.z > params_.cuboid_height) {
+    return false;
+  }
+
+  // Calculate line direction and perpendicular vectors
+  double dx = line.end_x - line.start_x;
+  double dy = line.end_y - line.start_y;
+  double line_len = std::sqrt(dx*dx + dy*dy);
+
+  if (line_len < 1e-6) {
+    return false;
+  }
+
+  double dir_x = dx / line_len;
+  double dir_y = dy / line_len;
+
+  // Perpendicular vector (to the left when facing along the line)
+  double perp_x = -dir_y;
+  double perp_y = dir_x;
+
+  // Line center
+  double center_x = (line.start_x + line.end_x) / 2.0;
+  double center_y = (line.start_y + line.end_y) / 2.0;
+
+  // Vector from center to point
+  double to_point_x = point.x - center_x;
+  double to_point_y = point.y - center_y;
+
+  // Project onto line direction (along the line)
+  double proj_along = to_point_x * dir_x + to_point_y * dir_y;
+
+  // Project onto perpendicular direction (thickness)
+  double proj_perp = to_point_x * perp_x + to_point_y * perp_y;
+
+  // Check if point is within cuboid bounds
+  double half_length = line.length / 2.0;
+  double half_thickness = params_.cuboid_thickness / 2.0;
+
+  return (std::abs(proj_along) <= half_length) && (std::abs(proj_perp) <= half_thickness);
+}
+
+double PalletDetection::disambiguateAngle(double angle, double prev_angle)
+{
+  // Normalize both angles to [-π, π]
+  auto normalize = [](double a) {
+    while (a > M_PI) a -= 2.0 * M_PI;
+    while (a < -M_PI) a += 2.0 * M_PI;
+    return a;
+  };
+
+  angle = normalize(angle);
+  prev_angle = normalize(prev_angle);
+
+  // Two possible directions: angle and angle+π
+  double angle_alt = angle + M_PI;
+  angle_alt = normalize(angle_alt);
+
+  // Choose the one closer to previous angle
+  double diff1 = std::abs(angle - prev_angle);
+  double diff2 = std::abs(angle_alt - prev_angle);
+
+  // Handle angle wrapping (e.g., -π vs +π)
+  if (diff1 > M_PI) diff1 = 2.0 * M_PI - diff1;
+  if (diff2 > M_PI) diff2 = 2.0 * M_PI - diff2;
+
+  return (diff1 < diff2) ? angle : angle_alt;
 }
 
 }  // namespace floor_removal_rgbd

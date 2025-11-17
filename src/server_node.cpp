@@ -42,27 +42,38 @@ FloorRemovalServerNode::FloorRemovalServerNode()
 
   // Create PalletDetection with loaded parameters
   enable_pallet_detection_ = this->get_parameter("enable_pallet_detection").as_bool();
+  loosely_coupled_ = this->get_parameter("loosely_coupled").as_bool();
 
   if (enable_pallet_detection_) {
     PalletDetectionParams pallet_params;
-    pallet_params.distance_threshold = this->get_parameter("pallet_distance_threshold").as_double();
-    pallet_params.max_iterations = this->get_parameter("pallet_max_iterations").as_int();
-    pallet_params.normal_x_threshold = this->get_parameter("pallet_normal_x_threshold").as_double();
-    pallet_params.cluster_tolerance = this->get_parameter("pallet_cluster_tolerance").as_double();
-    pallet_params.min_cluster_size = this->get_parameter("pallet_min_cluster_size").as_int();
-    pallet_params.max_cluster_size = this->get_parameter("pallet_max_cluster_size").as_int();
-    pallet_params.min_plane_inliers = this->get_parameter("pallet_min_plane_inliers").as_int();
+    pallet_params.line_distance_threshold = this->get_parameter("pallet_line_distance_threshold").as_double();
+    pallet_params.line_min_points = this->get_parameter("pallet_line_min_points").as_int();
+    pallet_params.line_max_iterations = this->get_parameter("pallet_line_max_iterations").as_int();
+    pallet_params.line_merge_angle_threshold = this->get_parameter("pallet_line_merge_angle_threshold").as_double();
+    pallet_params.line_merge_distance_threshold = this->get_parameter("pallet_line_merge_distance_threshold").as_double();
+    pallet_params.line_min_length = this->get_parameter("pallet_line_min_length").as_double();
+    pallet_params.line_max_length = this->get_parameter("pallet_line_max_length").as_double();
+    pallet_params.line_max_length_tolerance = this->get_parameter("pallet_line_max_length_tolerance").as_double();
     pallet_params.marker_thickness = this->get_parameter("pallet_marker_thickness").as_double();
-    pallet_params.marker_bidirectional = this->get_parameter("pallet_marker_bidirectional").as_bool();
+    pallet_params.marker_height = this->get_parameter("pallet_marker_height").as_double();
+
+    // Preprocessing parameters
+    pallet_params.dbscan_eps = this->get_parameter("pallet_dbscan_eps").as_double();
+    pallet_params.dbscan_min_points = this->get_parameter("pallet_dbscan_min_points").as_int();
+    pallet_params.angle_bin_size = this->get_parameter("pallet_angle_bin_size").as_double();
+
+    // Cuboid volume generation parameters
+    pallet_params.cuboid_height = this->get_parameter("pallet_cuboid_height").as_double();
+    pallet_params.cuboid_thickness = this->get_parameter("pallet_cuboid_thickness").as_double();
 
     pallet_detection_ = std::make_unique<PalletDetection>(pallet_params);
 
-    RCLCPP_INFO(this->get_logger(), "[PALLET] Pallet detection enabled");
-    RCLCPP_INFO(this->get_logger(), "[PALLET]   Distance threshold: %.3f m", pallet_params.distance_threshold);
-    RCLCPP_INFO(this->get_logger(), "[PALLET]   Normal X threshold: %.3f", pallet_params.normal_x_threshold);
-    RCLCPP_INFO(this->get_logger(), "[PALLET]   Marker thickness: %.3f m (%s)",
-                pallet_params.marker_thickness,
-                pallet_params.marker_bidirectional ? "bidirectional" : "unidirectional");
+    RCLCPP_INFO(this->get_logger(), "[PALLET] Pallet detection enabled (2D line extraction)");
+    RCLCPP_INFO(this->get_logger(), "[PALLET]   Line distance threshold: %.3f m", pallet_params.line_distance_threshold);
+    RCLCPP_INFO(this->get_logger(), "[PALLET]   Min points per line: %d", pallet_params.line_min_points);
+    RCLCPP_INFO(this->get_logger(), "[PALLET]   Min line length: %.3f m", pallet_params.line_min_length);
+    RCLCPP_INFO(this->get_logger(), "[PALLET]   Marker height: %.3f m", pallet_params.marker_height);
+    RCLCPP_INFO(this->get_logger(), "[PALLET]   Loosely coupled: %s", loosely_coupled_ ? "true" : "false");
   }
 
   // TF2
@@ -93,10 +104,20 @@ FloorRemovalServerNode::FloorRemovalServerNode()
 
   // Pallet detection publishers
   if (enable_pallet_detection_) {
-    yz_plane_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
-      "/yz_plane_markers", 10);
+    extracted_lines_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
+      "/extracted_lines", 10);
+    line_candidates_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
+      "/line_candidates", 10);
     pallet_candidates_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
       "/pallet_candidates", 10);
+    pallet_cuboid_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
+      "/pallet_cuboid", 10);
+
+    // PoseStamped publisher for loosely coupled mode
+    if (loosely_coupled_) {
+      pallet_pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
+        "/pallet_pose", 10);
+    }
   }
 
   RCLCPP_INFO(this->get_logger(), "Floor Removal Server Node initialized");
@@ -162,17 +183,28 @@ void FloorRemovalServerNode::declareParameters()
   this->declare_parameter<double>("cam_pitch", 0.0);
   this->declare_parameter<double>("cam_yaw", 0.0);
 
-  // Pallet detection parameters
+  // Pallet detection parameters (line-based)
   this->declare_parameter<bool>("enable_pallet_detection", true);
-  this->declare_parameter<double>("pallet_distance_threshold", 0.03);
-  this->declare_parameter<int>("pallet_max_iterations", 200);
-  this->declare_parameter<double>("pallet_normal_x_threshold", 0.3);
-  this->declare_parameter<double>("pallet_cluster_tolerance", 0.10);
-  this->declare_parameter<int>("pallet_min_cluster_size", 50);
-  this->declare_parameter<int>("pallet_max_cluster_size", 25000);
-  this->declare_parameter<int>("pallet_min_plane_inliers", 30);
+  this->declare_parameter<bool>("loosely_coupled", false);
+  this->declare_parameter<double>("pallet_line_distance_threshold", 0.02);
+  this->declare_parameter<int>("pallet_line_min_points", 20);
+  this->declare_parameter<int>("pallet_line_max_iterations", 100);
+  this->declare_parameter<double>("pallet_line_merge_angle_threshold", 5.0);
+  this->declare_parameter<double>("pallet_line_merge_distance_threshold", 0.1);
+  this->declare_parameter<double>("pallet_line_min_length", 0.3);
+  this->declare_parameter<double>("pallet_line_max_length", 2.0);
+  this->declare_parameter<double>("pallet_line_max_length_tolerance", 0.2);
   this->declare_parameter<double>("pallet_marker_thickness", 0.02);
-  this->declare_parameter<bool>("pallet_marker_bidirectional", true);
+  this->declare_parameter<double>("pallet_marker_height", 0.5);
+
+  // Preprocessing parameters
+  this->declare_parameter<double>("pallet_dbscan_eps", 0.05);
+  this->declare_parameter<int>("pallet_dbscan_min_points", 5);
+  this->declare_parameter<double>("pallet_angle_bin_size", 0.5);
+
+  // Cuboid volume generation parameters
+  this->declare_parameter<double>("pallet_cuboid_height", 1.0);
+  this->declare_parameter<double>("pallet_cuboid_thickness", 0.1);
 }
 
 void FloorRemovalServerNode::loadParameters()
@@ -247,21 +279,71 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
     no_floor_cloud_voxelized_2d_projected_pub_->publish(no_floor_voxelized_2d_projected_msg);
   }
 
-  // Pallet detection (detect vertical walls using YZ plane detection)
-  if (enable_pallet_detection_ && pallet_detection_ && !result.no_floor_cloud_voxelized->points.empty()) {
-    auto pallet_result = pallet_detection_->detect(result.no_floor_cloud_voxelized, msg->header.frame_id);
+  // Pallet detection (line extraction from 2D projected cloud)
+  if (enable_pallet_detection_ && pallet_detection_ &&
+      result.no_floor_cloud_voxelized_2d_projected &&
+      !result.no_floor_cloud_voxelized_2d_projected->points.empty()) {
 
-    // Publish markers
-    if (!pallet_result.marker_array.markers.empty()) {
-      yz_plane_marker_pub_->publish(pallet_result.marker_array);
+    // Detect lines in 2D projected cloud and filter no_floor points inside cuboids
+    auto pallet_result = pallet_detection_->detect(
+      result.no_floor_cloud_voxelized_2d_projected,
+      result.no_floor_cloud_voxelized,  // Pass no_floor cloud to filter with cuboids
+      result.nx, result.ny, result.nz, result.d,  // Floor plane parameters
+      msg->header.frame_id);
+
+    // Publish extracted line markers
+    if (!pallet_result.line_markers.markers.empty()) {
+      extracted_lines_pub_->publish(pallet_result.line_markers);
     }
 
-    // Publish pallet candidates
+    // Publish line candidates (2D line points)
+    if (!pallet_result.line_candidates->points.empty()) {
+      sensor_msgs::msg::PointCloud2 line_candidates_msg;
+      pcl::toROSMsg(*pallet_result.line_candidates, line_candidates_msg);
+      line_candidates_msg.header = msg->header;
+      line_candidates_pub_->publish(line_candidates_msg);
+    }
+
+    // Publish pallet candidates (floor points inside cuboids)
     if (!pallet_result.pallet_candidates->points.empty()) {
       sensor_msgs::msg::PointCloud2 pallet_candidates_msg;
       pcl::toROSMsg(*pallet_result.pallet_candidates, pallet_candidates_msg);
       pallet_candidates_msg.header = msg->header;
       pallet_candidates_pub_->publish(pallet_candidates_msg);
+    }
+
+    // Publish pallet cuboid markers
+    if (!pallet_result.cuboid_markers.markers.empty()) {
+      pallet_cuboid_pub_->publish(pallet_result.cuboid_markers);
+    }
+
+    // Publish cuboid poses if loosely coupled mode is enabled
+    if (loosely_coupled_ && pallet_pose_pub_ && !pallet_result.detected_lines.empty()) {
+      // Publish each detected line as a PoseStamped
+      for (const auto& line : pallet_result.detected_lines) {
+        geometry_msgs::msg::PoseStamped pose_msg;
+        pose_msg.header = msg->header;
+
+        // Calculate line center point
+        double center_x = (line.start_x + line.end_x) / 2.0;
+        double center_y = (line.start_y + line.end_y) / 2.0;
+        double center_z = pallet_detection_->getParams().cuboid_height / 2.0;
+
+        pose_msg.pose.position.x = center_x;
+        pose_msg.pose.position.y = center_y;
+        pose_msg.pose.position.z = center_z;
+
+        // Calculate orientation from line angle (rotation around Z axis)
+        // Adjust angle: line.angle is relative to X-axis, add -π/2 to align with desired frame
+        // where X=forward(inward), Y=left, Z=up
+        double yaw = line.angle - M_PI / 2.0;
+        pose_msg.pose.orientation.x = 0.0;
+        pose_msg.pose.orientation.y = 0.0;
+        pose_msg.pose.orientation.z = std::sin(yaw / 2.0);
+        pose_msg.pose.orientation.w = std::cos(yaw / 2.0);
+
+        pallet_pose_pub_->publish(pose_msg);
+      }
     }
   }
 
