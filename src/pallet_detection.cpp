@@ -32,8 +32,18 @@ PalletDetectionResult PalletDetection::detect(
 
   std::cout << "[PalletDetection] Processing 2D cloud with " << cloud_2d->points.size() << " points" << std::endl;
 
-  // Extract lines from 2D point cloud
-  result.detected_lines = extractLines(cloud_2d);
+  // Preprocess: sort by angle and remove noise
+  auto cloud_preprocessed = preprocessCloud(cloud_2d);
+
+  if (!cloud_preprocessed || cloud_preprocessed->points.empty()) {
+    std::cout << "[PalletDetection] Cloud is empty after preprocessing" << std::endl;
+    return result;
+  }
+
+  std::cout << "[PalletDetection] After preprocessing: " << cloud_preprocessed->points.size() << " points" << std::endl;
+
+  // Extract lines from preprocessed point cloud
+  result.detected_lines = extractLines(cloud_preprocessed);
 
   // Merge similar lines
   result.detected_lines = mergeLines(result.detected_lines);
@@ -404,6 +414,203 @@ visualization_msgs::msg::Marker PalletDetection::createLineMarker(
 double PalletDetection::pointToLineDistance(double px, double py, double a, double b, double c)
 {
   return std::abs(a * px + b * py + c) / std::sqrt(a*a + b*b);
+}
+
+pcl::PointCloud<pcl::PointXYZRGB>::Ptr PalletDetection::preprocessCloud(
+  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud_2d)
+{
+  if (!cloud_2d || cloud_2d->points.empty()) {
+    return pcl::PointCloud<pcl::PointXYZRGB>::Ptr(new pcl::PointCloud<pcl::PointXYZRGB>);
+  }
+
+  // Step 1: DBSCAN clustering to remove noise and isolated points
+  std::cout << "[Preprocessing] Running DBSCAN clustering..." << std::endl;
+
+  std::vector<int> labels(cloud_2d->points.size(), -1); // -1 = unclassified, -2 = noise
+  std::vector<bool> visited(cloud_2d->points.size(), false);
+  int cluster_id = 0;
+
+  double eps_sq = params_.dbscan_eps * params_.dbscan_eps;
+
+  // DBSCAN algorithm
+  for (size_t i = 0; i < cloud_2d->points.size(); ++i) {
+    if (visited[i]) continue;
+    visited[i] = true;
+
+    // Find neighbors
+    std::vector<size_t> neighbors;
+    const auto& point = cloud_2d->points[i];
+
+    for (size_t j = 0; j < cloud_2d->points.size(); ++j) {
+      if (i == j) continue;
+      const auto& other = cloud_2d->points[j];
+
+      double dx = point.x - other.x;
+      double dy = point.y - other.y;
+      double dist_sq = dx*dx + dy*dy;
+
+      if (dist_sq <= eps_sq) {
+        neighbors.push_back(j);
+      }
+    }
+
+    // Check if core point
+    if (static_cast<int>(neighbors.size()) < params_.dbscan_min_points) {
+      labels[i] = -2; // noise
+      continue;
+    }
+
+    // Expand cluster
+    labels[i] = cluster_id;
+    std::vector<size_t> seeds = neighbors;
+
+    for (size_t k = 0; k < seeds.size(); ++k) {
+      size_t idx = seeds[k];
+
+      if (!visited[idx]) {
+        visited[idx] = true;
+
+        // Find neighbors of this point
+        std::vector<size_t> neighbors2;
+        const auto& point2 = cloud_2d->points[idx];
+
+        for (size_t j = 0; j < cloud_2d->points.size(); ++j) {
+          if (idx == j) continue;
+          const auto& other = cloud_2d->points[j];
+
+          double dx = point2.x - other.x;
+          double dy = point2.y - other.y;
+          double dist_sq = dx*dx + dy*dy;
+
+          if (dist_sq <= eps_sq) {
+            neighbors2.push_back(j);
+          }
+        }
+
+        if (static_cast<int>(neighbors2.size()) >= params_.dbscan_min_points) {
+          // Add new neighbors to seeds
+          for (size_t n : neighbors2) {
+            if (labels[n] == -1 || labels[n] == -2) {
+              bool already_in_seeds = false;
+              for (size_t s : seeds) {
+                if (s == n) {
+                  already_in_seeds = true;
+                  break;
+                }
+              }
+              if (!already_in_seeds) {
+                seeds.push_back(n);
+              }
+            }
+          }
+        }
+      }
+
+      if (labels[idx] == -1 || labels[idx] == -2) {
+        labels[idx] = cluster_id;
+      }
+    }
+
+    cluster_id++;
+  }
+
+  // Count clusters
+  int num_noise = 0;
+  for (size_t i = 0; i < labels.size(); ++i) {
+    if (labels[i] == -2) num_noise++;
+  }
+
+  std::cout << "[Preprocessing] Found " << cluster_id << " clusters, removed " << num_noise << " noise points" << std::endl;
+
+  // Keep only points in clusters (not noise)
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZRGB>);
+  cloud_filtered->header = cloud_2d->header;
+  cloud_filtered->points.reserve(cloud_2d->points.size() - num_noise);
+
+  for (size_t i = 0; i < cloud_2d->points.size(); ++i) {
+    if (labels[i] >= 0) { // not noise
+      cloud_filtered->points.push_back(cloud_2d->points[i]);
+    }
+  }
+
+  if (cloud_filtered->points.empty()) {
+    std::cout << "[Preprocessing] Warning: All points classified as noise!" << std::endl;
+    return cloud_filtered;
+  }
+
+  // Step 2: Sort points by angle (like LaserScan)
+  std::cout << "[Preprocessing] Sorting points by angle..." << std::endl;
+
+  struct PointWithAngle {
+    pcl::PointXYZRGB point;
+    double angle;
+    double range;
+  };
+
+  std::vector<PointWithAngle> points_with_angles;
+  points_with_angles.reserve(cloud_filtered->points.size());
+
+  for (const auto& pt : cloud_filtered->points) {
+    PointWithAngle pwa;
+    pwa.point = pt;
+    pwa.angle = std::atan2(pt.y, pt.x);
+    pwa.range = std::sqrt(pt.x * pt.x + pt.y * pt.y);
+    points_with_angles.push_back(pwa);
+  }
+
+  // Sort by angle
+  std::sort(points_with_angles.begin(), points_with_angles.end(),
+    [](const PointWithAngle& a, const PointWithAngle& b) {
+      return a.angle < b.angle;
+    });
+
+  // Step 3: Angular binning - keep only closest point in each angular bin
+  std::cout << "[Preprocessing] Angular binning..." << std::endl;
+
+  double angle_bin_rad = params_.angle_bin_size * M_PI / 180.0;
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_sorted(new pcl::PointCloud<pcl::PointXYZRGB>);
+  cloud_sorted->header = cloud_2d->header;
+
+  if (points_with_angles.empty()) {
+    return cloud_sorted;
+  }
+
+  // Group by angular bins
+  double current_bin_start = points_with_angles[0].angle;
+  double min_range = points_with_angles[0].range;
+  size_t min_range_idx = 0;
+
+  for (size_t i = 0; i < points_with_angles.size(); ++i) {
+    const auto& pwa = points_with_angles[i];
+
+    // Check if still in same bin
+    if (pwa.angle - current_bin_start < angle_bin_rad) {
+      // Update minimum range point in this bin
+      if (pwa.range < min_range) {
+        min_range = pwa.range;
+        min_range_idx = i;
+      }
+    } else {
+      // Save the closest point from previous bin
+      cloud_sorted->points.push_back(points_with_angles[min_range_idx].point);
+
+      // Start new bin
+      current_bin_start = pwa.angle;
+      min_range = pwa.range;
+      min_range_idx = i;
+    }
+  }
+
+  // Add last bin's closest point
+  cloud_sorted->points.push_back(points_with_angles[min_range_idx].point);
+
+  cloud_sorted->width = cloud_sorted->points.size();
+  cloud_sorted->height = 1;
+  cloud_sorted->is_dense = false;
+
+  std::cout << "[Preprocessing] Final point count: " << cloud_sorted->points.size() << std::endl;
+
+  return cloud_sorted;
 }
 
 }  // namespace floor_removal_rgbd

@@ -24,6 +24,11 @@ struct PalletDetectionParams
   double line_merge_distance_threshold = 0.1; // meters - merge lines within this distance
   double line_min_length = 0.3;            // meters - minimum line length to keep
 
+  // Preprocessing parameters
+  double dbscan_eps = 0.05;                // meters - DBSCAN epsilon for noise removal
+  int dbscan_min_points = 5;               // minimum points for DBSCAN cluster
+  double angle_bin_size = 0.5;             // degrees - bin size for angular sorting
+
   // Visualization marker parameters
   double marker_thickness = 0.02;          // meters - line marker thickness
   double marker_height = 0.5;              // meters - line marker height above floor
@@ -101,6 +106,14 @@ public:
   PalletDetectionResult detect(
     const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud_2d,
     const std::string& frame_id);
+
+  /**
+   * @brief Preprocess point cloud: sort by angle and remove noise clusters
+   * @param cloud_2d Input 2D point cloud
+   * @return Preprocessed and sorted point cloud
+   */
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr preprocessCloud(
+    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud_2d);
 
   /**
    * @brief Update detector parameters
