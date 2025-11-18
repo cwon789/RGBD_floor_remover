@@ -355,12 +355,33 @@ bool PalletDetection::fitLineRANSAC(
     max_proj = std::max(max_proj, proj);
   }
 
-  // Calculate endpoints
-  double center_proj = (min_proj + max_proj) / 2.0;
-  line.start_x = mean_x + vx * (min_proj - center_proj);
-  line.start_y = mean_y + vy * (min_proj - center_proj);
-  line.end_x = mean_x + vx * (max_proj - center_proj);
-  line.end_y = mean_y + vy * (max_proj - center_proj);
+  // Find actual points closest to min/max projections to ensure line length matches point cloud extent
+  double min_dist_to_min = std::numeric_limits<double>::max();
+  double min_dist_to_max = std::numeric_limits<double>::max();
+  pcl::PointXYZRGB start_point, end_point;
+
+  for (int idx : best_inlier_indices) {
+    const auto& pt = cloud_2d->points[idx];
+    double proj = vx * pt.x + vy * pt.y;
+
+    double dist_to_min = std::abs(proj - min_proj);
+    if (dist_to_min < min_dist_to_min) {
+      min_dist_to_min = dist_to_min;
+      start_point = pt;
+    }
+
+    double dist_to_max = std::abs(proj - max_proj);
+    if (dist_to_max < min_dist_to_max) {
+      min_dist_to_max = dist_to_max;
+      end_point = pt;
+    }
+  }
+
+  // Use actual point coordinates as endpoints
+  line.start_x = start_point.x;
+  line.start_y = start_point.y;
+  line.end_x = end_point.x;
+  line.end_y = end_point.y;
 
   // Calculate line length
   double dx = line.end_x - line.start_x;
@@ -694,12 +715,32 @@ std::vector<DetectedLine> PalletDetection::splitLongLine(
       max_proj = std::max(max_proj, proj);
     }
 
-    // Calculate endpoints
-    double center_proj = (min_proj + max_proj) / 2.0;
-    segment_line.start_x = mean_x + vx * (min_proj - center_proj);
-    segment_line.start_y = mean_y + vy * (min_proj - center_proj);
-    segment_line.end_x = mean_x + vx * (max_proj - center_proj);
-    segment_line.end_y = mean_y + vy * (max_proj - center_proj);
+    // Find actual points closest to min/max projections to ensure line length matches point cloud extent
+    double min_dist_to_min = std::numeric_limits<double>::max();
+    double min_dist_to_max = std::numeric_limits<double>::max();
+    pcl::PointXYZRGB seg_start_point, seg_end_point;
+
+    for (const auto& pt : segment_cloud->points) {
+      double proj = vx * pt.x + vy * pt.y;
+
+      double dist_to_min = std::abs(proj - min_proj);
+      if (dist_to_min < min_dist_to_min) {
+        min_dist_to_min = dist_to_min;
+        seg_start_point = pt;
+      }
+
+      double dist_to_max = std::abs(proj - max_proj);
+      if (dist_to_max < min_dist_to_max) {
+        min_dist_to_max = dist_to_max;
+        seg_end_point = pt;
+      }
+    }
+
+    // Use actual point coordinates as endpoints
+    segment_line.start_x = seg_start_point.x;
+    segment_line.start_y = seg_start_point.y;
+    segment_line.end_x = seg_end_point.x;
+    segment_line.end_y = seg_end_point.y;
 
     // Calculate line length
     double seg_dx = segment_line.end_x - segment_line.start_x;
