@@ -20,6 +20,7 @@ void HoleDetector::setParams(const HoleDetectorParams& params)
 
 HoleDetectionResult HoleDetector::detect(
   const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+  const std::vector<DetectedLine>& detected_lines,
   const std::string& frame_id)
 {
   HoleDetectionResult result;
@@ -29,38 +30,85 @@ HoleDetectionResult HoleDetector::detect(
     return result;
   }
 
-  std::cout << "[HoleDetector] Processing cloud with " << cloud->points.size() << " points" << std::endl;
-
-  // Step 1: Build occupancy grid
-  // Map from grid cell to point count
-  std::map<GridCell, int> occupancy_grid;
-
-  // Track grid bounds
-  double min_x = std::numeric_limits<double>::max();
-  double max_x = std::numeric_limits<double>::lowest();
-  double min_y = std::numeric_limits<double>::max();
-  double max_y = std::numeric_limits<double>::lowest();
-
-  for (const auto& pt : cloud->points) {
-    GridCell cell = worldToGrid(pt.x, pt.y);
-    occupancy_grid[cell]++;
-
-    // Track bounds
-    min_x = std::min(min_x, pt.x);
-    max_x = std::max(max_x, pt.x);
-    min_y = std::min(min_y, pt.y);
-    max_y = std::max(max_y, pt.y);
+  if (detected_lines.empty()) {
+    std::cout << "[HoleDetector] No detected lines provided" << std::endl;
+    return result;
   }
 
-  std::cout << "[HoleDetector] Grid bounds: X=[" << min_x << ", " << max_x
-            << "], Y=[" << min_y << ", " << max_y << "]" << std::endl;
-  std::cout << "[HoleDetector] Occupied cells: " << occupancy_grid.size() << std::endl;
+  std::cout << "[HoleDetector] Processing cloud with " << cloud->points.size()
+            << " points and " << detected_lines.size() << " pallet lines" << std::endl;
 
-  // Step 2: Find all cells within the bounding box
-  GridCell min_cell = worldToGrid(min_x, min_y);
-  GridCell max_cell = worldToGrid(max_x, max_y);
+  // Detect holes for each pallet line
+  int marker_id = 0;
+  for (const auto& line : detected_lines) {
+    std::cout << "[HoleDetector] Processing line at angle "
+              << (line.angle * 180.0 / M_PI) << " degrees" << std::endl;
 
-  // Step 3: Identify empty cells (cells with insufficient points)
+    auto holes_for_line = detectHolesForLine(cloud, line);
+
+    for (auto& hole : holes_for_line) {
+      result.detected_holes.push_back(hole);
+
+      // Create visualization marker
+      auto marker = createHoleMarker(hole, marker_id++, frame_id);
+      result.hole_markers.markers.push_back(marker);
+
+      std::cout << "[HoleDetector] Hole " << result.detected_holes.size()
+                << ": center=[" << hole.center_x << ", " << hole.center_y << ", " << hole.center_z
+                << "], size=[" << hole.width << " x " << hole.height
+                << "], cells=" << hole.num_cells
+                << ", area=" << hole.area << " m²" << std::endl;
+    }
+  }
+
+  std::cout << "[HoleDetector] Detected " << result.detected_holes.size()
+            << " holes total" << std::endl;
+
+  return result;
+}
+
+std::vector<DetectedHole> HoleDetector::detectHolesForLine(
+  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+  const DetectedLine& line)
+{
+  std::vector<DetectedHole> holes;
+
+  // Step 1: Project points to 2D local coordinate system (along line, height)
+  auto projected_points = projectPointsToLineFrame(cloud, line);
+
+  if (projected_points.empty()) {
+    std::cout << "[HoleDetector]   No points near this line" << std::endl;
+    return holes;
+  }
+
+  std::cout << "[HoleDetector]   Projected " << projected_points.size() << " points" << std::endl;
+
+  // Step 2: Build occupancy grid in 2D local coordinates
+  std::map<GridCell, int> occupancy_grid;
+  double min_along = std::numeric_limits<double>::max();
+  double max_along = std::numeric_limits<double>::lowest();
+  double min_height = std::numeric_limits<double>::max();
+  double max_height = std::numeric_limits<double>::lowest();
+
+  for (const auto& pp : projected_points) {
+    GridCell cell = localToGrid(pp.along_line, pp.height);
+    occupancy_grid[cell]++;
+
+    min_along = std::min(min_along, pp.along_line);
+    max_along = std::max(max_along, pp.along_line);
+    min_height = std::min(min_height, pp.height);
+    max_height = std::max(max_height, pp.height);
+  }
+
+  std::cout << "[HoleDetector]   Grid bounds: along=[" << min_along << ", " << max_along
+            << "], height=[" << min_height << ", " << max_height << "]" << std::endl;
+  std::cout << "[HoleDetector]   Occupied cells: " << occupancy_grid.size() << std::endl;
+
+  // Step 3: Find all cells within the bounding box
+  GridCell min_cell = localToGrid(min_along, min_height);
+  GridCell max_cell = localToGrid(max_along, max_height);
+
+  // Step 4: Identify empty cells
   std::set<GridCell> empty_cells;
   int total_cells = 0;
   int occupied_cells = 0;
@@ -81,77 +129,152 @@ HoleDetectionResult HoleDetector::detect(
     }
   }
 
-  std::cout << "[HoleDetector] Total cells in bounding box: " << total_cells << std::endl;
-  std::cout << "[HoleDetector] Occupied cells: " << occupied_cells << std::endl;
-  std::cout << "[HoleDetector] Empty cells: " << empty_cells.size() << std::endl;
+  std::cout << "[HoleDetector]   Total cells: " << total_cells
+            << ", occupied: " << occupied_cells
+            << ", empty: " << empty_cells.size() << std::endl;
 
-  // Step 4: Find connected components of empty cells (hole regions)
+  // Step 5: Find connected components of empty cells
   auto hole_regions = findHoleRegions(empty_cells);
 
-  std::cout << "[HoleDetector] Found " << hole_regions.size() << " hole regions" << std::endl;
+  std::cout << "[HoleDetector]   Found " << hole_regions.size() << " hole regions" << std::endl;
 
-  // Step 5: Create DetectedHole objects for regions meeting minimum size
-  int marker_id = 0;
+  // Step 6: Create DetectedHole objects and transform back to 3D
   for (const auto& region : hole_regions) {
     if (static_cast<int>(region.size()) < params_.min_hole_cells) {
-      continue;  // Skip small regions
+      continue;
     }
 
     DetectedHole hole;
     hole.num_cells = region.size();
+    hole.line_angle = line.angle;
 
-    // Calculate bounding box
-    hole.min_x = std::numeric_limits<double>::max();
-    hole.max_x = std::numeric_limits<double>::lowest();
-    hole.min_y = std::numeric_limits<double>::max();
-    hole.max_y = std::numeric_limits<double>::lowest();
+    // Calculate bounding box in 2D local coordinates
+    double min_local_along = std::numeric_limits<double>::max();
+    double max_local_along = std::numeric_limits<double>::lowest();
+    double min_local_height = std::numeric_limits<double>::max();
+    double max_local_height = std::numeric_limits<double>::lowest();
 
     for (const auto& cell : region) {
-      double wx, wy;
-      gridToWorld(cell, wx, wy);
+      double along, height;
+      gridToLocal(cell, along, height);
 
-      hole.min_x = std::min(hole.min_x, wx - params_.grid_resolution / 2.0);
-      hole.max_x = std::max(hole.max_x, wx + params_.grid_resolution / 2.0);
-      hole.min_y = std::min(hole.min_y, wy - params_.grid_resolution / 2.0);
-      hole.max_y = std::max(hole.max_y, wy + params_.grid_resolution / 2.0);
+      min_local_along = std::min(min_local_along, along - params_.grid_resolution / 2.0);
+      max_local_along = std::max(max_local_along, along + params_.grid_resolution / 2.0);
+      min_local_height = std::min(min_local_height, height - params_.grid_resolution / 2.0);
+      max_local_height = std::max(max_local_height, height + params_.grid_resolution / 2.0);
     }
 
-    // Calculate center and area
-    hole.center_x = (hole.min_x + hole.max_x) / 2.0;
-    hole.center_y = (hole.min_y + hole.max_y) / 2.0;
-    hole.area = (hole.max_x - hole.min_x) * (hole.max_y - hole.min_y);
+    // Calculate center in local coordinates
+    double center_along = (min_local_along + max_local_along) / 2.0;
+    double center_height = (min_local_height + max_local_height) / 2.0;
 
-    result.detected_holes.push_back(hole);
+    // Calculate dimensions
+    hole.width = max_local_along - min_local_along;
+    hole.height = max_local_height - min_local_height;
+    hole.area = hole.width * hole.height;
 
-    // Create visualization marker
-    auto marker = createHoleMarker(hole, marker_id++, frame_id);
-    result.hole_markers.markers.push_back(marker);
+    // Transform center back to 3D world coordinates
+    // Line direction vector (normalized)
+    double dx = line.end_x - line.start_x;
+    double dy = line.end_y - line.start_y;
+    double line_len = std::sqrt(dx*dx + dy*dy);
+    double dir_x = dx / line_len;
+    double dir_y = dy / line_len;
 
-    std::cout << "[HoleDetector] Hole " << result.detected_holes.size()
-              << ": center=[" << hole.center_x << ", " << hole.center_y
-              << "], size=[" << (hole.max_x - hole.min_x) << " x " << (hole.max_y - hole.min_y)
-              << "], cells=" << hole.num_cells
-              << ", area=" << hole.area << " m²" << std::endl;
+    // Perpendicular vector (pointing inward to pallet)
+    double perp_x = -dir_y;
+    double perp_y = dir_x;
+
+    // Line center point
+    double line_center_x = (line.start_x + line.end_x) / 2.0;
+    double line_center_y = (line.start_y + line.end_y) / 2.0;
+
+    // Calculate 3D position of hole center
+    // Start from line center, move along line by center_along, up by center_height
+    hole.center_x = line_center_x + dir_x * center_along;
+    hole.center_y = line_center_y + dir_y * center_along;
+    hole.center_z = center_height;
+
+    holes.push_back(hole);
   }
 
-  std::cout << "[HoleDetector] Detected " << result.detected_holes.size()
-            << " holes (after filtering)" << std::endl;
-
-  return result;
+  return holes;
 }
 
-HoleDetector::GridCell HoleDetector::worldToGrid(double wx, double wy) const
+std::vector<HoleDetector::ProjectedPoint> HoleDetector::projectPointsToLineFrame(
+  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+  const DetectedLine& line)
 {
-  int gx = static_cast<int>(std::floor(wx / params_.grid_resolution));
-  int gy = static_cast<int>(std::floor(wy / params_.grid_resolution));
+  std::vector<ProjectedPoint> projected;
+
+  // Line direction vector (normalized)
+  double dx = line.end_x - line.start_x;
+  double dy = line.end_y - line.start_y;
+  double line_len = std::sqrt(dx*dx + dy*dy);
+
+  if (line_len < 1e-6) {
+    return projected;
+  }
+
+  double dir_x = dx / line_len;
+  double dir_y = dy / line_len;
+
+  // Perpendicular vector (pointing inward to pallet)
+  double perp_x = -dir_y;
+  double perp_y = dir_x;
+
+  // Line center point (reference point)
+  double line_center_x = (line.start_x + line.end_x) / 2.0;
+  double line_center_y = (line.start_y + line.end_y) / 2.0;
+
+  // Filter and project points
+  for (const auto& pt : cloud->points) {
+    // Check if point is within height range
+    if (pt.z < params_.hole_z_min || pt.z > params_.hole_z_max) {
+      continue;
+    }
+
+    // Vector from line center to point
+    double to_point_x = pt.x - line_center_x;
+    double to_point_y = pt.y - line_center_y;
+
+    // Distance perpendicular to line
+    double perp_dist = to_point_x * perp_x + to_point_y * perp_y;
+
+    // Only consider points within search distance from line
+    if (std::abs(perp_dist) > params_.search_distance_from_line) {
+      continue;
+    }
+
+    // Project onto line direction (parallel component)
+    double along_line = to_point_x * dir_x + to_point_y * dir_y;
+
+    // Height is just Z coordinate
+    double height = pt.z;
+
+    ProjectedPoint pp;
+    pp.along_line = along_line;
+    pp.height = height;
+    pp.original_point = pt;
+
+    projected.push_back(pp);
+  }
+
+  return projected;
+}
+
+HoleDetector::GridCell HoleDetector::localToGrid(double along_line, double height) const
+{
+  int gx = static_cast<int>(std::floor(along_line / params_.grid_resolution));
+  int gy = static_cast<int>(std::floor(height / params_.grid_resolution));
   return GridCell(gx, gy);
 }
 
-void HoleDetector::gridToWorld(const GridCell& cell, double& wx, double& wy) const
+void HoleDetector::gridToLocal(const GridCell& cell, double& along_line, double& height) const
 {
   // Return center of cell
-  wx = (cell.x + 0.5) * params_.grid_resolution;
-  wy = (cell.y + 0.5) * params_.grid_resolution;
+  along_line = (cell.x + 0.5) * params_.grid_resolution;
+  height = (cell.y + 0.5) * params_.grid_resolution;
 }
 
 std::vector<std::vector<HoleDetector::GridCell>> HoleDetector::findHoleRegions(
@@ -162,7 +285,7 @@ std::vector<std::vector<HoleDetector::GridCell>> HoleDetector::findHoleRegions(
 
   for (const auto& cell : empty_cells) {
     if (visited.find(cell) != visited.end()) {
-      continue;  // Already visited
+      continue;
     }
 
     // Start a new region with DFS
@@ -192,7 +315,7 @@ void HoleDetector::dfs(const GridCell& current,
   visited.insert(current);
   component.push_back(current);
 
-  // Check 4-connected neighbors (up, down, left, right)
+  // Check 4-connected neighbors (left, right, up, down)
   std::vector<GridCell> neighbors = {
     GridCell(current.x - 1, current.y),
     GridCell(current.x + 1, current.y),
@@ -219,23 +342,26 @@ visualization_msgs::msg::Marker HoleDetector::createHoleMarker(
   marker.type = visualization_msgs::msg::Marker::CUBE;
   marker.action = visualization_msgs::msg::Marker::ADD;
 
-  // Position at center of hole, slightly above floor
+  // Position at center of hole
   marker.pose.position.x = hole.center_x;
   marker.pose.position.y = hole.center_y;
-  marker.pose.position.z = params_.marker_z_offset + params_.marker_height / 2.0;
+  marker.pose.position.z = hole.center_z;
 
-  // No rotation (aligned with XY plane)
+  // Orientation based on line angle
+  // The hole marker should be perpendicular to the pallet line
+  // Rotate around Z axis by line_angle + 90 degrees
+  double marker_yaw = hole.line_angle + M_PI / 2.0;
   marker.pose.orientation.x = 0.0;
   marker.pose.orientation.y = 0.0;
-  marker.pose.orientation.z = 0.0;
-  marker.pose.orientation.w = 1.0;
+  marker.pose.orientation.z = std::sin(marker_yaw / 2.0);
+  marker.pose.orientation.w = std::cos(marker_yaw / 2.0);
 
-  // Set scale (dimensions of the plane)
-  marker.scale.x = hole.max_x - hole.min_x;
-  marker.scale.y = hole.max_y - hole.min_y;
-  marker.scale.z = params_.marker_height;
+  // Set scale (dimensions)
+  marker.scale.x = params_.marker_thickness;  // Depth into pallet (perpendicular to wall)
+  marker.scale.y = hole.width;                // Width along the pallet line
+  marker.scale.z = hole.height;               // Height (vertical)
 
-  // Set color (red for holes - indicating danger/warning)
+  // Set color (red for holes - indicating insertion points)
   marker.color.r = 1.0;
   marker.color.g = 0.0;
   marker.color.b = 0.0;

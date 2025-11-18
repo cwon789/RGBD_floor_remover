@@ -7,6 +7,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <vector>
 #include <map>
+#include "floor_removal_rgbd/pallet_detection.hpp"
 
 namespace floor_removal_rgbd
 {
@@ -21,9 +22,15 @@ struct HoleDetectorParams
   int min_points_per_cell = 3;             // minimum points for a cell to be considered occupied
   int min_hole_cells = 4;                  // minimum cells for a hole region (about 10cm x 10cm)
 
+  // Height range for hole detection (Z range from floor)
+  double hole_z_min = 0.05;                // meters - minimum height from floor
+  double hole_z_max = 0.30;                // meters - maximum height from floor
+
+  // Distance from line to search for holes (perpendicular direction)
+  double search_distance_from_line = 0.20; // meters - how far from line to look for holes
+
   // Visualization marker parameters
-  double marker_height = 0.01;             // meters - thickness of hole plane marker
-  double marker_z_offset = 0.005;          // meters - height above floor to display marker
+  double marker_thickness = 0.02;          // meters - thickness of hole plane marker (depth into pallet)
 };
 
 /**
@@ -31,15 +38,16 @@ struct HoleDetectorParams
  */
 struct DetectedHole
 {
-  double center_x, center_y;               // Center position of hole
-  double min_x, min_y, max_x, max_y;       // Bounding box of hole
+  double center_x, center_y, center_z;     // Center position of hole in 3D
+  double width, height;                    // Width (along line) and height (vertical) of hole
   int num_cells;                           // Number of empty cells in this hole
   double area;                             // Approximate area in square meters
+  double line_angle;                       // Angle of associated pallet line (for orientation)
 
   DetectedHole()
-    : center_x(0), center_y(0)
-    , min_x(0), min_y(0), max_x(0), max_y(0)
-    , num_cells(0), area(0)
+    : center_x(0), center_y(0), center_z(0)
+    , width(0), height(0)
+    , num_cells(0), area(0), line_angle(0)
   {}
 };
 
@@ -58,8 +66,9 @@ struct HoleDetectionResult
  * @brief Detector for holes (empty spaces) in pallet point clouds
  *
  * This class uses a grid-based approach to detect empty regions in the
- * pallet point cloud. It divides the XY plane into a grid, counts points
- * in each cell, and identifies clusters of empty cells as holes.
+ * pallet vertical surfaces (YZ plane). For each detected pallet line, it
+ * projects points onto a 2D plane perpendicular to the line direction,
+ * then identifies clusters of empty cells as holes.
  */
 class HoleDetector
 {
@@ -73,11 +82,13 @@ public:
   /**
    * @brief Detect holes in pallet point cloud
    * @param cloud Input point cloud (pallet candidates)
+   * @param detected_lines Detected pallet lines (walls)
    * @param frame_id Frame ID for marker visualization
    * @return Detection result with detected holes and visualization markers
    */
   HoleDetectionResult detect(
     const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+    const std::vector<DetectedLine>& detected_lines,
     const std::string& frame_id);
 
   /**
@@ -115,18 +126,48 @@ private:
   };
 
   /**
-   * @brief Convert world coordinates to grid cell
-   * @param wx, wy World coordinates
-   * @return Grid cell
+   * @brief Projected point in 2D local coordinate system
    */
-  GridCell worldToGrid(double wx, double wy) const;
+  struct ProjectedPoint
+  {
+    double along_line;  // Coordinate along the pallet line (parallel to line)
+    double height;      // Coordinate in vertical direction (Z)
+    pcl::PointXYZRGB original_point;  // Original 3D point
+  };
 
   /**
-   * @brief Convert grid cell to world coordinates (cell center)
-   * @param cell Grid cell
-   * @param wx, wy Output world coordinates
+   * @brief Detect holes for a single pallet line
+   * @param cloud Input point cloud
+   * @param line Detected pallet line
+   * @return Vector of detected holes for this line
    */
-  void gridToWorld(const GridCell& cell, double& wx, double& wy) const;
+  std::vector<DetectedHole> detectHolesForLine(
+    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+    const DetectedLine& line);
+
+  /**
+   * @brief Project points onto 2D plane perpendicular to line
+   * @param cloud Input point cloud
+   * @param line Pallet line
+   * @return Vector of projected points in 2D local coordinates
+   */
+  std::vector<ProjectedPoint> projectPointsToLineFrame(
+    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+    const DetectedLine& line);
+
+  /**
+   * @brief Convert 2D local coordinates to grid cell
+   * @param along_line, height Local 2D coordinates
+   * @return Grid cell
+   */
+  GridCell localToGrid(double along_line, double height) const;
+
+  /**
+   * @brief Convert grid cell to 2D local coordinates (cell center)
+   * @param cell Grid cell
+   * @param along_line, height Output local coordinates
+   */
+  void gridToLocal(const GridCell& cell, double& along_line, double& height) const;
 
   /**
    * @brief Find connected components of empty cells (hole regions)

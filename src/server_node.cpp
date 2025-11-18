@@ -81,8 +81,10 @@ FloorRemovalServerNode::FloorRemovalServerNode()
     hole_params.grid_resolution = this->get_parameter("hole_grid_resolution").as_double();
     hole_params.min_points_per_cell = this->get_parameter("hole_min_points_per_cell").as_int();
     hole_params.min_hole_cells = this->get_parameter("hole_min_hole_cells").as_int();
-    hole_params.marker_height = this->get_parameter("hole_marker_height").as_double();
-    hole_params.marker_z_offset = this->get_parameter("hole_marker_z_offset").as_double();
+    hole_params.hole_z_min = this->get_parameter("hole_z_min").as_double();
+    hole_params.hole_z_max = this->get_parameter("hole_z_max").as_double();
+    hole_params.search_distance_from_line = this->get_parameter("hole_search_distance_from_line").as_double();
+    hole_params.marker_thickness = this->get_parameter("hole_marker_thickness").as_double();
 
     hole_detector_ = std::make_unique<HoleDetector>(hole_params);
 
@@ -90,6 +92,8 @@ FloorRemovalServerNode::FloorRemovalServerNode()
     RCLCPP_INFO(this->get_logger(), "[HOLE]   Grid resolution: %.3f m", hole_params.grid_resolution);
     RCLCPP_INFO(this->get_logger(), "[HOLE]   Min points per cell: %d", hole_params.min_points_per_cell);
     RCLCPP_INFO(this->get_logger(), "[HOLE]   Min hole cells: %d", hole_params.min_hole_cells);
+    RCLCPP_INFO(this->get_logger(), "[HOLE]   Height range: [%.3f, %.3f] m", hole_params.hole_z_min, hole_params.hole_z_max);
+    RCLCPP_INFO(this->get_logger(), "[HOLE]   Search distance: %.3f m", hole_params.search_distance_from_line);
   }
 
   // TF2
@@ -231,8 +235,10 @@ void FloorRemovalServerNode::declareParameters()
   this->declare_parameter<double>("hole_grid_resolution", 0.05);
   this->declare_parameter<int>("hole_min_points_per_cell", 3);
   this->declare_parameter<int>("hole_min_hole_cells", 4);
-  this->declare_parameter<double>("hole_marker_height", 0.01);
-  this->declare_parameter<double>("hole_marker_z_offset", 0.005);
+  this->declare_parameter<double>("hole_z_min", 0.05);
+  this->declare_parameter<double>("hole_z_max", 0.30);
+  this->declare_parameter<double>("hole_search_distance_from_line", 0.20);
+  this->declare_parameter<double>("hole_marker_thickness", 0.02);
 }
 
 void FloorRemovalServerNode::loadParameters()
@@ -375,8 +381,13 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
     }
 
     // Hole detection (detect empty spaces in pallet candidates)
-    if (enable_hole_detection_ && hole_detector_ && !pallet_result.pallet_candidates->points.empty()) {
-      auto hole_result = hole_detector_->detect(pallet_result.pallet_candidates, msg->header.frame_id);
+    if (enable_hole_detection_ && hole_detector_ &&
+        !pallet_result.pallet_candidates->points.empty() &&
+        !pallet_result.detected_lines.empty()) {
+      auto hole_result = hole_detector_->detect(
+        pallet_result.pallet_candidates,
+        pallet_result.detected_lines,
+        msg->header.frame_id);
 
       // Publish hole markers
       if (!hole_result.hole_markers.markers.empty()) {
