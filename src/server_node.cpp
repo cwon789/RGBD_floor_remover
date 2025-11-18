@@ -58,8 +58,6 @@ FloorRemovalServerNode::FloorRemovalServerNode()
     pallet_params.marker_height = this->get_parameter("pallet_marker_height").as_double();
 
     // Preprocessing parameters
-    pallet_params.dbscan_eps = this->get_parameter("pallet_dbscan_eps").as_double();
-    pallet_params.dbscan_min_points = this->get_parameter("pallet_dbscan_min_points").as_int();
     pallet_params.angle_bin_size = this->get_parameter("pallet_angle_bin_size").as_double();
 
     // Cuboid volume generation parameters
@@ -198,8 +196,6 @@ void FloorRemovalServerNode::declareParameters()
   this->declare_parameter<double>("pallet_marker_height", 0.5);
 
   // Preprocessing parameters
-  this->declare_parameter<double>("pallet_dbscan_eps", 0.05);
-  this->declare_parameter<int>("pallet_dbscan_min_points", 5);
   this->declare_parameter<double>("pallet_angle_bin_size", 0.5);
 
   // Cuboid volume generation parameters
