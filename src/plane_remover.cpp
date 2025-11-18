@@ -206,8 +206,8 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::applyVoxelGrid(
 pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::filterByDistance(
   const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud)
 {
-  // Filter points by distance from camera origin
-  // In robot frame: X=forward (depth), so distance = sqrt(x^2 + y^2 + z^2)
+  // Filter points by distance from camera origin and maximum height
+  // In robot frame: X=forward (depth), Z=up (height)
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZRGB>);
   cloud_filtered->header = cloud->header;
   cloud_filtered->points.reserve(cloud->points.size());
@@ -216,7 +216,9 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::filterByDistance(
 
   for (const auto& point : cloud->points) {
     double dist_sq = point.x * point.x + point.y * point.y + point.z * point.z;
-    if (dist_sq <= max_dist_sq) {
+
+    // Filter by distance and height
+    if (dist_sq <= max_dist_sq && point.z <= params_.max_height) {
       cloud_filtered->points.push_back(point);
     }
   }

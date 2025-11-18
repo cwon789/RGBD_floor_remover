@@ -36,7 +36,7 @@ struct PlaneRemoverParams
 
   // Detection range parameters
   double max_detection_distance = 10.0;     // maximum detection distance from camera (meters)
-
+  double max_height = 3.0;                  // maximum height (Z coordinate) in robot frame (meters)
 
   // Camera extrinsic parameters (camera optical frame to robot base frame)
   // Translation: camera position in robot frame (meters)

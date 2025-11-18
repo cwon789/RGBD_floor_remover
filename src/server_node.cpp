@@ -28,6 +28,7 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   params.use_voxel_grid = this->get_parameter("use_voxel_grid").as_bool();
   params.voxel_leaf_size = this->get_parameter("voxel_leaf_size").as_double();
   params.max_detection_distance = this->get_parameter("max_detection_distance").as_double();
+  params.max_height = this->get_parameter("max_height").as_double();
 
   // Camera extrinsic parameters
   params.use_default_transform = this->get_parameter("use_default_transform").as_bool();
@@ -153,6 +154,8 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   RCLCPP_INFO(this->get_logger(), "  Output floor (voxelized): %s", output_floor_cloud_voxelized_topic_.c_str());
   RCLCPP_INFO(this->get_logger(), "  Output no-floor (voxelized): %s", output_no_floor_cloud_voxelized_topic_.c_str());
   RCLCPP_INFO(this->get_logger(), "  Floor height: %.3f m", params.floor_height);
+  RCLCPP_INFO(this->get_logger(), "  Max detection distance: %.3f m", params.max_detection_distance);
+  RCLCPP_INFO(this->get_logger(), "  Max height: %.3f m", params.max_height);
   RCLCPP_INFO(this->get_logger(), "  Voxel grid: %s (leaf size: %.3f m)",
               params.use_voxel_grid ? "enabled" : "disabled",
               params.voxel_leaf_size);
@@ -197,6 +200,7 @@ void FloorRemovalServerNode::declareParameters()
 
   // Detection range parameters
   this->declare_parameter<double>("max_detection_distance", 10.0);
+  this->declare_parameter<double>("max_height", 3.0);
 
   // Stringer detection parameters
 
