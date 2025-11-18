@@ -43,6 +43,7 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   // Create PalletDetection with loaded parameters
   enable_pallet_detection_ = this->get_parameter("enable_pallet_detection").as_bool();
   loosely_coupled_ = this->get_parameter("loosely_coupled").as_bool();
+  enable_hole_detection_ = this->get_parameter("enable_hole_detection").as_bool();
 
   if (enable_pallet_detection_) {
     PalletDetectionParams pallet_params;
@@ -72,6 +73,23 @@ FloorRemovalServerNode::FloorRemovalServerNode()
     RCLCPP_INFO(this->get_logger(), "[PALLET]   Min line length: %.3f m", pallet_params.line_min_length);
     RCLCPP_INFO(this->get_logger(), "[PALLET]   Marker height: %.3f m", pallet_params.marker_height);
     RCLCPP_INFO(this->get_logger(), "[PALLET]   Loosely coupled: %s", loosely_coupled_ ? "true" : "false");
+  }
+
+  // Create HoleDetector with loaded parameters
+  if (enable_hole_detection_) {
+    HoleDetectorParams hole_params;
+    hole_params.grid_resolution = this->get_parameter("hole_grid_resolution").as_double();
+    hole_params.min_points_per_cell = this->get_parameter("hole_min_points_per_cell").as_int();
+    hole_params.min_hole_cells = this->get_parameter("hole_min_hole_cells").as_int();
+    hole_params.marker_height = this->get_parameter("hole_marker_height").as_double();
+    hole_params.marker_z_offset = this->get_parameter("hole_marker_z_offset").as_double();
+
+    hole_detector_ = std::make_unique<HoleDetector>(hole_params);
+
+    RCLCPP_INFO(this->get_logger(), "[HOLE] Hole detection enabled");
+    RCLCPP_INFO(this->get_logger(), "[HOLE]   Grid resolution: %.3f m", hole_params.grid_resolution);
+    RCLCPP_INFO(this->get_logger(), "[HOLE]   Min points per cell: %d", hole_params.min_points_per_cell);
+    RCLCPP_INFO(this->get_logger(), "[HOLE]   Min hole cells: %d", hole_params.min_hole_cells);
   }
 
   // TF2
@@ -116,6 +134,12 @@ FloorRemovalServerNode::FloorRemovalServerNode()
       pallet_pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
         "/pallet_pose", 10);
     }
+  }
+
+  // Hole detection publishers
+  if (enable_hole_detection_) {
+    pallet_holes_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
+      "/pallet_holes", 10);
   }
 
   RCLCPP_INFO(this->get_logger(), "Floor Removal Server Node initialized");
@@ -201,6 +225,14 @@ void FloorRemovalServerNode::declareParameters()
   // Cuboid volume generation parameters
   this->declare_parameter<double>("pallet_cuboid_height", 1.0);
   this->declare_parameter<double>("pallet_cuboid_thickness", 0.1);
+
+  // Hole detection parameters
+  this->declare_parameter<bool>("enable_hole_detection", true);
+  this->declare_parameter<double>("hole_grid_resolution", 0.05);
+  this->declare_parameter<int>("hole_min_points_per_cell", 3);
+  this->declare_parameter<int>("hole_min_hole_cells", 4);
+  this->declare_parameter<double>("hole_marker_height", 0.01);
+  this->declare_parameter<double>("hole_marker_z_offset", 0.005);
 }
 
 void FloorRemovalServerNode::loadParameters()
@@ -339,6 +371,16 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
         pose_msg.pose.orientation.w = std::cos(yaw / 2.0);
 
         pallet_pose_pub_->publish(pose_msg);
+      }
+    }
+
+    // Hole detection (detect empty spaces in pallet candidates)
+    if (enable_hole_detection_ && hole_detector_ && !pallet_result.pallet_candidates->points.empty()) {
+      auto hole_result = hole_detector_->detect(pallet_result.pallet_candidates, msg->header.frame_id);
+
+      // Publish hole markers
+      if (!hole_result.hole_markers.markers.empty()) {
+        pallet_holes_pub_->publish(hole_result.hole_markers);
       }
     }
   }

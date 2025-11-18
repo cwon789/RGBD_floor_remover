@@ -12,6 +12,7 @@
 
 #include "floor_removal_rgbd/plane_remover.hpp"
 #include "floor_removal_rgbd/pallet_detection.hpp"
+#include "floor_removal_rgbd/hole_detector.hpp"
 #include <memory>
 
 namespace floor_removal_rgbd
@@ -68,6 +69,9 @@ private:
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pallet_cuboid_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pallet_pose_pub_;
 
+  // Hole detection publishers
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pallet_holes_pub_;
+
   // TF2
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
@@ -75,10 +79,12 @@ private:
   // Core algorithms
   std::unique_ptr<PlaneRemover> plane_remover_;
   std::unique_ptr<PalletDetection> pallet_detection_;
+  std::unique_ptr<HoleDetector> hole_detector_;
 
   // Pallet detection enable flag
   bool enable_pallet_detection_;
   bool loosely_coupled_;
+  bool enable_hole_detection_;
 
   // Topic names
   std::string input_cloud_topic_;

@@ -61,6 +61,23 @@ target_link_libraries(plane_remover
   ${PCL_LIBRARIES}
 )
 
+# Core library: hole_detector
+add_library(hole_detector
+  src/hole_detector.cpp
+)
+
+ament_target_dependencies(hole_detector
+  rclcpp
+  sensor_msgs
+  visualization_msgs
+  pcl_conversions
+  pcl_ros
+)
+
+target_link_libraries(hole_detector
+  ${PCL_LIBRARIES}
+)
+
 # Floor removal server node
 add_executable(floor_removal_node
   src/server_node.cpp
@@ -81,6 +98,7 @@ ament_target_dependencies(floor_removal_node
 target_link_libraries(floor_removal_node
   pallet_detection
   plane_remover
+  hole_detector
   ${PCL_LIBRARIES}
 )
 
@@ -94,6 +112,7 @@ install(TARGETS
 install(TARGETS
   pallet_detection
   plane_remover
+  hole_detector
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
