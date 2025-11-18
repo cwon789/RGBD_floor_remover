@@ -19,14 +19,16 @@ void HoleDetector::setParams(const HoleDetectorParams& params)
 }
 
 HoleDetectionResult HoleDetector::detect(
-  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& pallet_candidates,
+  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& line_candidates,
   const std::vector<DetectedLine>& detected_lines,
   const std::string& frame_id)
 {
   HoleDetectionResult result;
 
-  if (!cloud || cloud->points.empty()) {
-    std::cout << "[HoleDetector] Input cloud is empty" << std::endl;
+  if ((!pallet_candidates || pallet_candidates->points.empty()) &&
+      (!line_candidates || line_candidates->points.empty())) {
+    std::cout << "[HoleDetector] Both input clouds are empty" << std::endl;
     return result;
   }
 
@@ -35,8 +37,24 @@ HoleDetectionResult HoleDetector::detect(
     return result;
   }
 
-  std::cout << "[HoleDetector] Processing cloud with " << cloud->points.size()
-            << " points and " << detected_lines.size() << " pallet lines" << std::endl;
+  // Merge pallet_candidates and line_candidates
+  // This helps detect holes even when bottom surface is missing
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr merged_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
+
+  if (pallet_candidates && !pallet_candidates->points.empty()) {
+    *merged_cloud += *pallet_candidates;
+  }
+
+  if (line_candidates && !line_candidates->points.empty()) {
+    *merged_cloud += *line_candidates;
+  }
+
+  std::cout << "[HoleDetector] Merged cloud: pallet_candidates="
+            << (pallet_candidates ? pallet_candidates->points.size() : 0)
+            << " + line_candidates="
+            << (line_candidates ? line_candidates->points.size() : 0)
+            << " = " << merged_cloud->points.size() << " points" << std::endl;
+  std::cout << "[HoleDetector] Processing " << detected_lines.size() << " pallet lines" << std::endl;
 
   // Detect holes for each pallet line
   int marker_id = 0;
@@ -44,7 +62,7 @@ HoleDetectionResult HoleDetector::detect(
     std::cout << "[HoleDetector] Processing line at angle "
               << (line.angle * 180.0 / M_PI) << " degrees" << std::endl;
 
-    auto holes_for_line = detectHolesForLine(cloud, line);
+    auto holes_for_line = detectHolesForLine(merged_cloud, line);
 
     for (auto& hole : holes_for_line) {
       result.detected_holes.push_back(hole);

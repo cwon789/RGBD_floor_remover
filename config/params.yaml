@@ -30,6 +30,7 @@ floor_removal_node:
 
     # Detection range parameters
     max_detection_distance: 15.0     # maximum detection distance from camera (meters)
+    max_height: 3.0                  # maximum height (Z coordinate) in robot frame (meters)
 
     # Camera extrinsic parameters
     # NOTE: Default optical->base transform is ALWAYS applied first

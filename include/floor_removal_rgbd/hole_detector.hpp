@@ -81,13 +81,15 @@ public:
 
   /**
    * @brief Detect holes in pallet point cloud
-   * @param cloud Input point cloud (pallet candidates)
+   * @param pallet_candidates Input point cloud (pallet candidates - floor points inside cuboids)
+   * @param line_candidates Input point cloud (line candidates - wall/line points)
    * @param detected_lines Detected pallet lines (walls)
    * @param frame_id Frame ID for marker visualization
    * @return Detection result with detected holes and visualization markers
    */
   HoleDetectionResult detect(
-    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& pallet_candidates,
+    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& line_candidates,
     const std::vector<DetectedLine>& detected_lines,
     const std::string& frame_id);
 

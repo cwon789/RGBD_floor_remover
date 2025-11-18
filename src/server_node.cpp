@@ -386,10 +386,12 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
 
     // Hole detection (detect empty spaces in pallet candidates)
     if (enable_hole_detection_ && hole_detector_ &&
-        !pallet_result.pallet_candidates->points.empty() &&
-        !pallet_result.detected_lines.empty()) {
+        !pallet_result.detected_lines.empty() &&
+        (!pallet_result.pallet_candidates->points.empty() ||
+         !pallet_result.line_candidates->points.empty())) {
       auto hole_result = hole_detector_->detect(
         pallet_result.pallet_candidates,
+        pallet_result.line_candidates,
         pallet_result.detected_lines,
         msg->header.frame_id);
 
