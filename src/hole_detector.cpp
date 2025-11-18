@@ -166,25 +166,70 @@ std::vector<DetectedHole> HoleDetector::detectHolesForLine(
     hole.num_cells = region.size();
     hole.line_angle = line.angle;
 
-    // Calculate bounding box in 2D local coordinates
+    // Find all points that are AROUND the hole (occupied cells adjacent to empty cells)
+    std::set<GridCell> boundary_cells;
+    for (const auto& empty_cell : region) {
+      // Check 4-connected neighbors
+      std::vector<GridCell> neighbors = {
+        GridCell(empty_cell.x - 1, empty_cell.y),
+        GridCell(empty_cell.x + 1, empty_cell.y),
+        GridCell(empty_cell.x, empty_cell.y - 1),
+        GridCell(empty_cell.x, empty_cell.y + 1)
+      };
+
+      for (const auto& neighbor : neighbors) {
+        // If neighbor is occupied (not in empty cells set), it's a boundary
+        if (empty_cells.find(neighbor) == empty_cells.end()) {
+          // Check if this cell has points in occupancy grid
+          if (occupancy_grid.find(neighbor) != occupancy_grid.end()) {
+            boundary_cells.insert(neighbor);
+          }
+        }
+      }
+    }
+
+    // If no boundary cells found, use the region itself for bounds
+    if (boundary_cells.empty()) {
+      std::cout << "[HoleDetector]   Warning: No boundary cells found for hole region" << std::endl;
+      continue;
+    }
+
+    // Find actual points in boundary cells to compute accurate bounding box
+    std::vector<ProjectedPoint> boundary_points;
+    for (const auto& pp : projected_points) {
+      GridCell cell = localToGrid(pp.along_line, pp.height);
+      if (boundary_cells.find(cell) != boundary_cells.end()) {
+        boundary_points.push_back(pp);
+      }
+    }
+
+    if (boundary_points.empty()) {
+      std::cout << "[HoleDetector]   Warning: No boundary points found" << std::endl;
+      continue;
+    }
+
+    // Calculate bounding box from actual boundary points
     double min_local_along = std::numeric_limits<double>::max();
     double max_local_along = std::numeric_limits<double>::lowest();
     double min_local_height = std::numeric_limits<double>::max();
     double max_local_height = std::numeric_limits<double>::lowest();
 
-    for (const auto& cell : region) {
-      double along, height;
-      gridToLocal(cell, along, height);
-
-      min_local_along = std::min(min_local_along, along - params_.grid_resolution / 2.0);
-      max_local_along = std::max(max_local_along, along + params_.grid_resolution / 2.0);
-      min_local_height = std::min(min_local_height, height - params_.grid_resolution / 2.0);
-      max_local_height = std::max(max_local_height, height + params_.grid_resolution / 2.0);
+    for (const auto& pp : boundary_points) {
+      min_local_along = std::min(min_local_along, pp.along_line);
+      max_local_along = std::max(max_local_along, pp.along_line);
+      min_local_height = std::min(min_local_height, pp.height);
+      max_local_height = std::max(max_local_height, pp.height);
     }
 
-    // Calculate center in local coordinates
-    double center_along = (min_local_along + max_local_along) / 2.0;
-    double center_height = (min_local_height + max_local_height) / 2.0;
+    // Calculate center in local coordinates (average of boundary points)
+    double sum_along = 0.0;
+    double sum_height = 0.0;
+    for (const auto& pp : boundary_points) {
+      sum_along += pp.along_line;
+      sum_height += pp.height;
+    }
+    double center_along = sum_along / boundary_points.size();
+    double center_height = sum_height / boundary_points.size();
 
     // Calculate dimensions
     hole.width = max_local_along - min_local_along;
