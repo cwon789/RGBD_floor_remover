@@ -355,12 +355,33 @@ bool PalletDetection::fitLineRANSAC(
     max_proj = std::max(max_proj, proj);
   }
 
-  // Calculate endpoints
-  double center_proj = (min_proj + max_proj) / 2.0;
-  line.start_x = mean_x + vx * (min_proj - center_proj);
-  line.start_y = mean_y + vy * (min_proj - center_proj);
-  line.end_x = mean_x + vx * (max_proj - center_proj);
-  line.end_y = mean_y + vy * (max_proj - center_proj);
+  // Find actual points closest to min/max projections to ensure line length matches point cloud extent
+  double min_dist_to_min = std::numeric_limits<double>::max();
+  double min_dist_to_max = std::numeric_limits<double>::max();
+  pcl::PointXYZRGB start_point, end_point;
+
+  for (int idx : best_inlier_indices) {
+    const auto& pt = cloud_2d->points[idx];
+    double proj = vx * pt.x + vy * pt.y;
+
+    double dist_to_min = std::abs(proj - min_proj);
+    if (dist_to_min < min_dist_to_min) {
+      min_dist_to_min = dist_to_min;
+      start_point = pt;
+    }
+
+    double dist_to_max = std::abs(proj - max_proj);
+    if (dist_to_max < min_dist_to_max) {
+      min_dist_to_max = dist_to_max;
+      end_point = pt;
+    }
+  }
+
+  // Use actual point coordinates as endpoints
+  line.start_x = start_point.x;
+  line.start_y = start_point.y;
+  line.end_x = end_point.x;
+  line.end_y = end_point.y;
 
   // Calculate line length
   double dx = line.end_x - line.start_x;
@@ -568,7 +589,7 @@ std::vector<DetectedLine> PalletDetection::splitLongLine(
 
   // Step 2: Find gaps in the sorted points
   // Gap threshold: if distance between consecutive points is too large, it's a gap
-  double gap_threshold = params_.dbscan_eps * 3.0; // Use 3x DBSCAN eps as gap threshold
+  double gap_threshold = 0.15; // meters - gap threshold for splitting lines
 
   std::vector<std::vector<size_t>> segments;
   std::vector<size_t> current_segment;
@@ -694,12 +715,32 @@ std::vector<DetectedLine> PalletDetection::splitLongLine(
       max_proj = std::max(max_proj, proj);
     }
 
-    // Calculate endpoints
-    double center_proj = (min_proj + max_proj) / 2.0;
-    segment_line.start_x = mean_x + vx * (min_proj - center_proj);
-    segment_line.start_y = mean_y + vy * (min_proj - center_proj);
-    segment_line.end_x = mean_x + vx * (max_proj - center_proj);
-    segment_line.end_y = mean_y + vy * (max_proj - center_proj);
+    // Find actual points closest to min/max projections to ensure line length matches point cloud extent
+    double min_dist_to_min = std::numeric_limits<double>::max();
+    double min_dist_to_max = std::numeric_limits<double>::max();
+    pcl::PointXYZRGB seg_start_point, seg_end_point;
+
+    for (const auto& pt : segment_cloud->points) {
+      double proj = vx * pt.x + vy * pt.y;
+
+      double dist_to_min = std::abs(proj - min_proj);
+      if (dist_to_min < min_dist_to_min) {
+        min_dist_to_min = dist_to_min;
+        seg_start_point = pt;
+      }
+
+      double dist_to_max = std::abs(proj - max_proj);
+      if (dist_to_max < min_dist_to_max) {
+        min_dist_to_max = dist_to_max;
+        seg_end_point = pt;
+      }
+    }
+
+    // Use actual point coordinates as endpoints
+    segment_line.start_x = seg_start_point.x;
+    segment_line.start_y = seg_start_point.y;
+    segment_line.end_x = seg_end_point.x;
+    segment_line.end_y = seg_end_point.y;
 
     // Calculate line length
     double seg_dx = segment_line.end_x - segment_line.start_x;
@@ -724,122 +765,7 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr PalletDetection::preprocessCloud(
     return pcl::PointCloud<pcl::PointXYZRGB>::Ptr(new pcl::PointCloud<pcl::PointXYZRGB>);
   }
 
-  // Step 1: DBSCAN clustering to remove noise and isolated points
-  std::cout << "[Preprocessing] Running DBSCAN clustering..." << std::endl;
-
-  std::vector<int> labels(cloud_2d->points.size(), -1); // -1 = unclassified, -2 = noise
-  std::vector<bool> visited(cloud_2d->points.size(), false);
-  int cluster_id = 0;
-
-  double eps_sq = params_.dbscan_eps * params_.dbscan_eps;
-
-  // DBSCAN algorithm
-  for (size_t i = 0; i < cloud_2d->points.size(); ++i) {
-    if (visited[i]) continue;
-    visited[i] = true;
-
-    // Find neighbors
-    std::vector<size_t> neighbors;
-    const auto& point = cloud_2d->points[i];
-
-    for (size_t j = 0; j < cloud_2d->points.size(); ++j) {
-      if (i == j) continue;
-      const auto& other = cloud_2d->points[j];
-
-      double dx = point.x - other.x;
-      double dy = point.y - other.y;
-      double dist_sq = dx*dx + dy*dy;
-
-      if (dist_sq <= eps_sq) {
-        neighbors.push_back(j);
-      }
-    }
-
-    // Check if core point
-    if (static_cast<int>(neighbors.size()) < params_.dbscan_min_points) {
-      labels[i] = -2; // noise
-      continue;
-    }
-
-    // Expand cluster
-    labels[i] = cluster_id;
-    std::vector<size_t> seeds = neighbors;
-
-    for (size_t k = 0; k < seeds.size(); ++k) {
-      size_t idx = seeds[k];
-
-      if (!visited[idx]) {
-        visited[idx] = true;
-
-        // Find neighbors of this point
-        std::vector<size_t> neighbors2;
-        const auto& point2 = cloud_2d->points[idx];
-
-        for (size_t j = 0; j < cloud_2d->points.size(); ++j) {
-          if (idx == j) continue;
-          const auto& other = cloud_2d->points[j];
-
-          double dx = point2.x - other.x;
-          double dy = point2.y - other.y;
-          double dist_sq = dx*dx + dy*dy;
-
-          if (dist_sq <= eps_sq) {
-            neighbors2.push_back(j);
-          }
-        }
-
-        if (static_cast<int>(neighbors2.size()) >= params_.dbscan_min_points) {
-          // Add new neighbors to seeds
-          for (size_t n : neighbors2) {
-            if (labels[n] == -1 || labels[n] == -2) {
-              bool already_in_seeds = false;
-              for (size_t s : seeds) {
-                if (s == n) {
-                  already_in_seeds = true;
-                  break;
-                }
-              }
-              if (!already_in_seeds) {
-                seeds.push_back(n);
-              }
-            }
-          }
-        }
-      }
-
-      if (labels[idx] == -1 || labels[idx] == -2) {
-        labels[idx] = cluster_id;
-      }
-    }
-
-    cluster_id++;
-  }
-
-  // Count clusters
-  int num_noise = 0;
-  for (size_t i = 0; i < labels.size(); ++i) {
-    if (labels[i] == -2) num_noise++;
-  }
-
-  std::cout << "[Preprocessing] Found " << cluster_id << " clusters, removed " << num_noise << " noise points" << std::endl;
-
-  // Keep only points in clusters (not noise)
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZRGB>);
-  cloud_filtered->header = cloud_2d->header;
-  cloud_filtered->points.reserve(cloud_2d->points.size() - num_noise);
-
-  for (size_t i = 0; i < cloud_2d->points.size(); ++i) {
-    if (labels[i] >= 0) { // not noise
-      cloud_filtered->points.push_back(cloud_2d->points[i]);
-    }
-  }
-
-  if (cloud_filtered->points.empty()) {
-    std::cout << "[Preprocessing] Warning: All points classified as noise!" << std::endl;
-    return cloud_filtered;
-  }
-
-  // Step 2: Sort points by angle (like LaserScan)
+  // Step 1: Sort points by angle (like LaserScan)
   std::cout << "[Preprocessing] Sorting points by angle..." << std::endl;
 
   struct PointWithAngle {
@@ -849,9 +775,9 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr PalletDetection::preprocessCloud(
   };
 
   std::vector<PointWithAngle> points_with_angles;
-  points_with_angles.reserve(cloud_filtered->points.size());
+  points_with_angles.reserve(cloud_2d->points.size());
 
-  for (const auto& pt : cloud_filtered->points) {
+  for (const auto& pt : cloud_2d->points) {
     PointWithAngle pwa;
     pwa.point = pt;
     pwa.angle = std::atan2(pt.y, pt.x);
@@ -865,7 +791,7 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr PalletDetection::preprocessCloud(
       return a.angle < b.angle;
     });
 
-  // Step 3: Angular binning - keep only closest point in each angular bin
+  // Step 2: Angular binning - keep only closest point in each angular bin
   std::cout << "[Preprocessing] Angular binning..." << std::endl;
 
   double angle_bin_rad = params_.angle_bin_size * M_PI / 180.0;

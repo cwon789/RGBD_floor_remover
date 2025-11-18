@@ -27,8 +27,6 @@ struct PalletDetectionParams
   double line_max_length_tolerance = 0.2;  // meters - tolerance for max length check
 
   // Preprocessing parameters
-  double dbscan_eps = 0.05;                // meters - DBSCAN epsilon for noise removal
-  int dbscan_min_points = 5;               // minimum points for DBSCAN cluster
   double angle_bin_size = 0.5;             // degrees - bin size for angular sorting
 
   // Visualization marker parameters
