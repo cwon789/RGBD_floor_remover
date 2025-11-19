@@ -1,5 +1,9 @@
 floor_removal_node:
   ros__parameters:
+    # ========================================
+    # Common Parameters (always used)
+    # ========================================
+
     # Input/Output topics
     input_cloud_topic: "/lx_camera_node/LxCamera_Cloud"
     output_floor_cloud_topic: "/floor_cloud"
@@ -8,20 +12,18 @@ floor_removal_node:
     output_no_floor_cloud_voxelized_topic: "/no_floor_cloud_voxelized"
 
     # RANSAC parameters for floor detection
-    ransac_distance_threshold: 0.02  # meters - points within this distance are considered inliers
-    ransac_max_iterations: 100       # maximum iterations for RANSAC
+    ransac_distance_threshold: 0.03  # meters - points within this distance are considered inliers
+                                     # Increased for uneven warehouse floors
+    ransac_max_iterations: 150       # maximum iterations for RANSAC
+                                     # More iterations for robust detection in cluttered environment
     floor_normal_z_threshold: 0.7    # minimum Z component of normal in robot frame (Z=up)
-                                     # For horizontal floor, nz should be close to 1.0
-
-    # Floor height in robot frame (Z coordinate)
-    floor_height: 0.0               # meters - floor Z coordinate in robot frame
-                                     # Points with Z <= floor_height + detection_thickness are considered floor
+                                     # 0.7 = ~45° tolerance for tilted floor (cos(45°)≈0.7)
 
     # Floor region parameters (robot frame: X=forward, Y=left, Z=up)
-    floor_detection_thickness: 0.01  # meters - thickness for RANSAC plane detection (noise level)
-                                     # Large enough to get sufficient points after voxelization
+    floor_detection_thickness: 0.01  # meters - thickness for RANSAC plane detection
+                                     # Larger to handle uneven warehouse floors (bumps, cracks)
     floor_removal_thickness: 0.01    # meters - thickness for actual floor removal (inflation)
-                                     # Small to preserve objects on floor (e.g., 10cm pallets)
+                                     # Balance: remove floor but preserve 10cm pallet bottoms
     floor_margin: 0.0               # additional margin around detected floor plane (meters)
 
     # Voxel grid downsampling (reduces computation and noise)
@@ -32,67 +34,65 @@ floor_removal_node:
     max_detection_distance: 15.0     # maximum detection distance from camera (meters)
     max_height: 3.0                  # maximum height (Z coordinate) in robot frame (meters)
 
-    # Camera extrinsic parameters
+
+    # ========================================
+    # Floor Detection Mode Selection
+    # ========================================
+    # Choose between auto detection (dynamic) or fixed height (manual)
+    use_auto_floor_detection: true   # true: auto detect from point cloud
+                                     # false: use fixed floor_height below
+
+
+    # ========================================
+    # Auto Mode Parameters (only used if use_auto_floor_detection: true)
+    # ========================================
+    # Automatically detect floor from lowest points in point cloud
+    # Robust to robot pitch/roll and sensor noise (ToF shadows)
+    # Tuned for warehouse/factory environments with FMR robot
+
+    auto_floor_percentile: 1.0      # percentile of lowest points (1.0 = lowest 1%)
+                                     # Used to find minimum floor Z
+    auto_floor_max_percentile: 10.0  # percentile for max Z (10.0 = lowest 10%)
+                                     # Handles tilted/pitched floor and FMR pitch/roll
+    min_valid_z: 0.0              # meters - minimum valid Z (filter ToF shadow noise)
+                                     # Points below -5cm are ToF sensor artifacts (shadows)
+    max_floor_z: 0.12               # meters - maximum floor height
+                                     # Just below 10cm pallet bottom
+                                     # Handles: FMR tilt (~8cm at 5°) + uneven floor (~3-4cm)
+
+
+    # ========================================
+    # Fixed Mode Parameters (only used if use_auto_floor_detection: false)
+    # ========================================
+    # Manually specify floor height in robot frame
+
+    floor_height: 0.0               # meters - floor Z coordinate in robot frame
+                                     # Points with Z <= floor_height + detection_thickness are considered floor
+
+
+    # ========================================
+    # Camera Extrinsic Parameters
+    # ========================================
     # NOTE: Default optical->base transform is ALWAYS applied first
     # (optical: X=right,Y=down,Z=forward -> base: X=forward,Y=left,Z=up)
 
-    use_default_transform: false      # true: use only default transform
+    use_default_transform: false      # true: use only default optical->base transform
                                      # false: apply ADDITIONAL extrinsic on top of default
 
-    # Additional extrinsic transform (only used if use_default_transform: false)
+
+    # ========================================
+    # Additional Extrinsic Transform (only used if use_default_transform: false)
+    # ========================================
     # Applied AFTER default optical->base transform
+    # Compensates for camera mounting position/orientation relative to robot base
+
     # Translation: additional camera offset in robot base frame (meters)
     cam_tx: 0.0                      # X offset (forward)
     cam_ty: 0.0                      # Y offset (left)
-    cam_tz: 0.35                      # Z offset (up)
+    cam_tz: 0.35                     # Z offset (up)
 
     # Rotation: Euler angles in robot base frame (radians) - ZYX order
-    cam_roll: 0.0                   # rotation around X axis (radians)
-    cam_pitch: 0.0                 # rotation around Y axis (radians)
+    cam_roll: 0.0                    # rotation around X axis (radians)
+    cam_pitch: 0.0                   # rotation around Y axis (radians)
     cam_yaw: 0.0                     # rotation around Z axis (radians)
 
-    # ========== Pallet Detection Parameters (Line-based) ==========
-    # Extract lines from 2D projected point cloud for pallet detection
-    enable_pallet_detection: true
-    loosely_coupled: true  # if true, publish cuboid poses as PoseStamped messages
-
-    # Line extraction parameters
-    pallet_line_distance_threshold: 0.02    # meters - distance threshold for line fitting
-    pallet_line_min_points: 20              # minimum points to form a line
-    pallet_line_max_iterations: 100         # maximum RANSAC iterations for line fitting
-    pallet_line_merge_angle_threshold: 5.0  # degrees - merge lines within this angle
-    pallet_line_merge_distance_threshold: 0.1  # meters - merge lines within this distance
-    pallet_line_min_length: 0.8             # meters - minimum line length to keep
-    pallet_line_max_length: 1.2             # meters - maximum line length (0 = no limit)
-                                            # Lines longer than this will be split (prevents person+wall merging)
-    pallet_line_max_length_tolerance: 0.1   # meters - tolerance for max length check
-
-    # Preprocessing parameters (improve line detection quality)
-    pallet_angle_bin_size: 0.5              # degrees - angular resolution (like LaserScan)
-
-    # Visualization marker parameters
-    pallet_marker_thickness: 0.02           # meters - line marker thickness
-    pallet_marker_height: 0.0               # meters - line marker height above floor
-
-    # Cuboid volume generation parameters
-    pallet_cuboid_height: 0.15               # meters - height to extend line upward (Z-axis)
-    pallet_cuboid_thickness: 0.15            # meters - thickness to extend line forward/backward (perpendicular to line)
-
-    # ========== Hole Detection Parameters ==========
-    # Detect empty spaces (holes) in pallet vertical surfaces for fork insertion
-    enable_hole_detection: true
-
-    # Grid-based detection parameters
-    hole_grid_resolution: 0.05               # meters - size of each grid cell (5cm x 5cm)
-    hole_min_points_per_cell: 3              # minimum points for a cell to be considered occupied
-    hole_min_hole_cells: 4                   # minimum cells for a hole region
-
-    # Height range for hole detection (Z coordinate from floor)
-    hole_z_min: 0.05                         # meters - minimum height from floor to search for holes
-    hole_z_max: 0.30                         # meters - maximum height from floor to search for holes
-
-    # Distance from pallet line to search for holes
-    hole_search_distance_from_line: 0.20     # meters - how far from line to look for holes (perpendicular)
-
-    # Visualization marker parameters
-    hole_marker_thickness: 0.02              # meters - thickness of hole plane marker (depth into pallet)

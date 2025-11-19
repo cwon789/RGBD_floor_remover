@@ -44,13 +44,7 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>
   std::cout << "[DEBUG] Filtered cloud size (within " << params_.max_detection_distance
             << "m): " << cloud_filtered->points.size() << std::endl;
 
-  // Step 3: Extract floor region for RANSAC (based on Z height)
-  double min_z;
-  // Use configured floor height
-  min_z = params_.floor_height;
-  std::cout << "[DEBUG] Fixed mode - floor_height: " << min_z << std::endl;
-
-  // Step 4: Apply voxel grid downsampling if enabled (work in robot frame)
+  // Step 3: Apply voxel grid downsampling if enabled (work in robot frame)
   auto cloud_voxelized = cloud_filtered;
   if (params_.use_voxel_grid) {
     cloud_voxelized = applyVoxelGrid(cloud_filtered);
@@ -60,7 +54,29 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>
     result.voxelized_points = cloud_filtered->points.size();
   }
 
-  auto floor_region = extractFloorRegion(cloud_voxelized, min_z);
+  // Step 3.5: Filter out invalid Z points
+  auto cloud_valid = filterByValidZ(cloud_voxelized);
+
+  // Step 4: Determine floor Z range
+  double min_z, max_z;
+  if (params_.use_auto_floor_detection) {
+    min_z = findMinZPercentile(cloud_valid, params_.auto_floor_percentile);
+    max_z = findMaxZPercentile(cloud_valid, params_.auto_floor_max_percentile);
+
+    // Clamp to valid range
+    if (min_z < params_.min_valid_z) min_z = params_.min_valid_z;
+    if (min_z > params_.max_floor_z) min_z = params_.max_floor_z;
+    if (max_z < min_z) max_z = min_z + params_.floor_detection_thickness;
+    if (max_z > params_.max_floor_z + 0.15) max_z = params_.max_floor_z + 0.15;
+
+    std::cout << "[DEBUG] Auto mode - floor Z range: [" << min_z << ", " << max_z << "]" << std::endl;
+  } else {
+    min_z = params_.floor_height;
+    max_z = min_z + params_.floor_detection_thickness;
+    std::cout << "[DEBUG] Fixed mode - floor Z range: [" << min_z << ", " << max_z << "]" << std::endl;
+  }
+
+  auto floor_region = extractFloorRegion(cloud_voxelized, min_z, max_z);
   result.floor_region_points = floor_region->points.size();
   std::cout << "[DEBUG] Floor region points for RANSAC: " << result.floor_region_points << std::endl;
 
@@ -241,16 +257,67 @@ double PlaneRemover::findMinZ(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& clou
   return min_z;
 }
 
-pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::extractFloorRegion(
-  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, double min_z)
+double PlaneRemover::findMinZPercentile(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, double percentile)
 {
-  // Robot frame: Z=up, so floor is near min Z
-  // Use DETECTION thickness (wider) for RANSAC to get enough points
-  double floor_z_max = min_z + params_.floor_detection_thickness;
+  if (cloud->points.empty()) return 0.0;
 
+  std::vector<float> z_values;
+  z_values.reserve(cloud->points.size());
+  for (const auto& point : cloud->points) {
+    z_values.push_back(point.z);
+  }
+
+  std::sort(z_values.begin(), z_values.end());
+  size_t index = static_cast<size_t>(z_values.size() * percentile / 100.0);
+  index = std::min(index, z_values.size() - 1);
+
+  return static_cast<double>(z_values[index]);
+}
+
+double PlaneRemover::findMaxZPercentile(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, double percentile)
+{
+  if (cloud->points.empty()) return 0.0;
+
+  std::vector<float> z_values;
+  z_values.reserve(cloud->points.size());
+  for (const auto& point : cloud->points) {
+    z_values.push_back(point.z);
+  }
+
+  std::sort(z_values.begin(), z_values.end());
+  size_t index = static_cast<size_t>(z_values.size() * percentile / 100.0);
+  index = std::min(index, z_values.size() - 1);
+
+  return static_cast<double>(z_values[index]);
+}
+
+pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::filterByValidZ(
+  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud)
+{
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZRGB>);
+  cloud_filtered->header = cloud->header;
+  cloud_filtered->points.reserve(cloud->points.size());
+
+  for (const auto& point : cloud->points) {
+    if (point.z >= params_.min_valid_z) {
+      cloud_filtered->points.push_back(point);
+    }
+  }
+
+  cloud_filtered->width = cloud_filtered->points.size();
+  cloud_filtered->height = 1;
+  cloud_filtered->is_dense = false;
+
+  return cloud_filtered;
+}
+
+pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::extractFloorRegion(
+  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, double min_z, double max_z)
+{
+  // Robot frame: Z=up, so floor is between min_z and max_z
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr floor_region(new pcl::PointCloud<pcl::PointXYZRGB>);
   for (const auto& point : cloud->points) {
-    if (point.z >= min_z && point.z <= floor_z_max) {
+    if (point.z >= min_z && point.z <= max_z) {
       floor_region->points.push_back(point);
     }
   }

@@ -25,6 +25,13 @@ struct PlaneRemoverParams
   // Floor height in robot frame (Z coordinate)
   double floor_height = 0.0;                // meters - floor height in robot frame (Z coordinate)
 
+  // Auto mode for tilted floor detection
+  bool use_auto_floor_detection = true;     // true: auto detect, false: use fixed floor_height
+  double auto_floor_percentile = 1.0;       // percentile of lowest points (1.0 = lowest 1%)
+  double auto_floor_max_percentile = 10.0;  // percentile for max Z (10.0 = lowest 10%)
+  double min_valid_z = -0.05;               // meters - minimum valid Z
+  double max_floor_z = 0.15;                // meters - maximum Z for floor
+
   // Floor region parameters
   double floor_detection_thickness = 0.15;  // meters - region for RANSAC plane detection
   double floor_removal_thickness = 0.03;    // meters - thickness for actual floor removal
@@ -162,13 +169,38 @@ private:
   double findMinZ(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud);
 
   /**
-   * @brief Extract floor region points for RANSAC (points near minimum Z)
+   * @brief Find minimum Z at given percentile
+   * @param cloud Input cloud
+   * @param percentile Percentile (1.0 = lowest 1%)
+   * @return Z value at percentile
+   */
+  double findMinZPercentile(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, double percentile);
+
+  /**
+   * @brief Find maximum Z at given percentile
+   * @param cloud Input cloud
+   * @param percentile Percentile (10.0 = lowest 10%)
+   * @return Z value at percentile
+   */
+  double findMaxZPercentile(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, double percentile);
+
+  /**
+   * @brief Filter out invalid Z points
+   * @param cloud Input cloud
+   * @return Filtered cloud
+   */
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr filterByValidZ(
+    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud);
+
+  /**
+   * @brief Extract floor region points for RANSAC
    * @param cloud Input cloud
    * @param min_z Minimum Z value
+   * @param max_z Maximum Z value
    * @return Floor region point cloud
    */
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr extractFloorRegion(
-    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, double min_z);
+    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, double min_z, double max_z);
 
   /**
    * @brief Detect floor plane using RANSAC on voxelized cloud

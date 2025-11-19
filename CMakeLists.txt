@@ -14,11 +14,6 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
-find_package(geometry_msgs REQUIRED)
-find_package(visualization_msgs REQUIRED)
-find_package(tf2_ros REQUIRED)
-find_package(tf2_eigen REQUIRED)
-find_package(tf2_geometry_msgs REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(pcl_ros REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common segmentation filters)
@@ -26,23 +21,6 @@ find_package(PCL REQUIRED COMPONENTS common segmentation filters)
 include_directories(
   include
   ${PCL_INCLUDE_DIRS}
-)
-
-# Core library: pallet_detection
-add_library(pallet_detection
-  src/pallet_detection.cpp
-)
-
-ament_target_dependencies(pallet_detection
-  rclcpp
-  sensor_msgs
-  visualization_msgs
-  pcl_conversions
-  pcl_ros
-)
-
-target_link_libraries(pallet_detection
-  ${PCL_LIBRARIES}
 )
 
 # Core library: plane_remover
@@ -61,23 +39,6 @@ target_link_libraries(plane_remover
   ${PCL_LIBRARIES}
 )
 
-# Core library: hole_detector
-add_library(hole_detector
-  src/hole_detector.cpp
-)
-
-ament_target_dependencies(hole_detector
-  rclcpp
-  sensor_msgs
-  visualization_msgs
-  pcl_conversions
-  pcl_ros
-)
-
-target_link_libraries(hole_detector
-  ${PCL_LIBRARIES}
-)
-
 # Floor removal server node
 add_executable(floor_removal_node
   src/server_node.cpp
@@ -86,19 +47,12 @@ add_executable(floor_removal_node
 ament_target_dependencies(floor_removal_node
   rclcpp
   sensor_msgs
-  geometry_msgs
-  visualization_msgs
-  tf2_ros
-  tf2_eigen
-  tf2_geometry_msgs
   pcl_conversions
   pcl_ros
 )
 
 target_link_libraries(floor_removal_node
-  pallet_detection
   plane_remover
-  hole_detector
   ${PCL_LIBRARIES}
 )
 
@@ -110,9 +64,7 @@ install(TARGETS
 
 # Install libraries
 install(TARGETS
-  pallet_detection
   plane_remover
-  hole_detector
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
