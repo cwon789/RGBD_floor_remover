@@ -523,6 +523,8 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::removeFloorNoise(
 
     // Check 3x3x3 neighborhood (27 voxels including current)
     int neighbor_count = 0;
+    int occupied_voxels = 0;  // Count how many neighboring voxels have points
+
     for (int dx = -1; dx <= 1; dx++) {
       for (int dy = -1; dy <= 1; dy++) {
         for (int dz = -1; dz <= 1; dz++) {
@@ -530,13 +532,18 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::removeFloorNoise(
           auto it = voxel_count.find(neighbor_hash);
           if (it != voxel_count.end()) {
             neighbor_count += it->second;
+            occupied_voxels++;
           }
         }
       }
     }
 
-    // Keep point if neighborhood has enough points
-    if (neighbor_count >= params_.noise_min_neighbors) {
+    // More strict filtering: require both sufficient points AND occupied voxels
+    // This prevents single isolated points from passing through
+    bool has_enough_neighbors = (neighbor_count >= params_.noise_min_neighbors) &&
+                                 (occupied_voxels >= 3);  // At least 3 voxels occupied
+
+    if (has_enough_neighbors) {
       cloud_filtered->points.push_back(point);
     } else {
       noise_removed++;
