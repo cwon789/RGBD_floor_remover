@@ -118,7 +118,8 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZ>::P
                       result.floor_cloud_voxelized, result.no_floor_cloud_voxelized);
 
   // Step 9: Remove noise from voxelized no-floor cloud
-  result.no_floor_cloud_voxelized = removeFloorNoise(result.no_floor_cloud_voxelized, nx, ny, nz, d);
+  result.no_floor_cloud_voxelized = removeFloorNoise(result.no_floor_cloud_voxelized, nx, ny, nz, d, result.noise_cloud);
+  result.noise_points = result.noise_cloud->points.size();
 
   // Step 10: Project no_floor_cloud_voxelized to 2D (detected floor plane)
   result.no_floor_cloud_voxelized_2d_projected = projectTo2D(result.no_floor_cloud_voxelized, nx, ny, nz, d);
@@ -266,9 +267,13 @@ void PlaneRemover::removePointsOnPlane(
   pcl::PointCloud<pcl::PointXYZ>::Ptr& no_floor_cloud)
 {
   // Remove points on or near the detected plane (floor removal)
-  // Camera optical frame - plane equation: nx*x + ny*y + nz*z + d = 0
+  // Camera optical frame: Y=down, floor normal points up (-Y direction, ny < 0)
+  // Plane equation: nx*x + ny*y + nz*z + d = 0
   // Signed distance = nx*x + ny*y + nz*z + d
-  // Points with abs(distance) < threshold are considered floor
+  //
+  // Since ny < 0 (normal points up):
+  //   - signed_distance > 0: above floor (keep if > threshold)
+  //   - signed_distance <= 0: at or below floor (remove ALL - ToF ghost removal)
 
   double threshold = params_.floor_removal_distance_threshold + params_.floor_margin;
 
@@ -276,10 +281,16 @@ void PlaneRemover::removePointsOnPlane(
     // Calculate signed distance from point to plane
     double signed_distance = nx * point.x + ny * point.y + nz * point.z + d;
 
-    // Points close to the plane (within threshold) are considered floor
-    if (std::abs(signed_distance) <= threshold) {
+    // ToF ghost handling: remove ALL points at or below floor
+    // Only apply threshold to points ABOVE floor
+    if (signed_distance <= 0.0) {
+      // Below or on floor plane -> remove (ToF ghost)
+      floor_cloud->points.push_back(point);
+    } else if (signed_distance <= threshold) {
+      // Above floor but within threshold -> floor
       floor_cloud->points.push_back(point);
     } else {
+      // Above floor and beyond threshold -> keep
       no_floor_cloud->points.push_back(point);
     }
   }
@@ -335,7 +346,8 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::projectTo2D(
 
 pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::removeFloorNoise(
   const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
-  double nx, double ny, double nz, double d)
+  double nx, double ny, double nz, double d,
+  pcl::PointCloud<pcl::PointXYZ>::Ptr& noise_cloud)
 {
   if (!params_.enable_noise_removal || cloud->points.empty()) {
     return cloud;
@@ -369,6 +381,8 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::removeFloorNoise(
   pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZ>);
   cloud_filtered->header = cloud->header;
   cloud_filtered->points.reserve(cloud->points.size());
+  noise_cloud->header = cloud->header;
+  noise_cloud->points.reserve(cloud->points.size());
 
   size_t noise_removed = 0;
 
@@ -414,6 +428,7 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::removeFloorNoise(
     if (has_enough_neighbors) {
       cloud_filtered->points.push_back(point);
     } else {
+      noise_cloud->points.push_back(point);
       noise_removed++;
     }
   }
@@ -421,6 +436,10 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::removeFloorNoise(
   cloud_filtered->width = cloud_filtered->points.size();
   cloud_filtered->height = 1;
   cloud_filtered->is_dense = false;
+
+  noise_cloud->width = noise_cloud->points.size();
+  noise_cloud->height = 1;
+  noise_cloud->is_dense = false;
 
   // Only log if significant noise was removed (> 10% of near-plane points)
   size_t near_plane_points = cloud->points.size() - cloud_filtered->points.size() + noise_removed;

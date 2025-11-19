@@ -54,12 +54,16 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   no_floor_cloud_voxelized_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
     output_no_floor_cloud_voxelized_topic_, 10);
 
+  noise_cloud_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
+    output_noise_cloud_topic_, 10);
+
   RCLCPP_INFO(this->get_logger(), "Floor Removal Server Node initialized (Extrinsic-independent)");
   RCLCPP_INFO(this->get_logger(), "  Input: %s", input_cloud_topic_.c_str());
   RCLCPP_INFO(this->get_logger(), "  Output floor: %s", output_floor_cloud_topic_.c_str());
   RCLCPP_INFO(this->get_logger(), "  Output no-floor: %s", output_no_floor_cloud_topic_.c_str());
   RCLCPP_INFO(this->get_logger(), "  Output floor (voxelized): %s", output_floor_cloud_voxelized_topic_.c_str());
   RCLCPP_INFO(this->get_logger(), "  Output no-floor (voxelized): %s", output_no_floor_cloud_voxelized_topic_.c_str());
+  RCLCPP_INFO(this->get_logger(), "  Output noise: %s", output_noise_cloud_topic_.c_str());
   RCLCPP_INFO(this->get_logger(), "  Floor detection depth range: [%.2f, %.2f] m",
               params.floor_detection_min_depth, params.floor_detection_max_depth);
   RCLCPP_INFO(this->get_logger(), "  Floor normal Y threshold: %.2f (camera frame)",
@@ -81,6 +85,7 @@ void FloorRemovalServerNode::declareParameters()
   this->declare_parameter<std::string>("output_no_floor_cloud_topic", "/no_floor_cloud");
   this->declare_parameter<std::string>("output_floor_cloud_voxelized_topic", "/floor_cloud_voxelized");
   this->declare_parameter<std::string>("output_no_floor_cloud_voxelized_topic", "/no_floor_cloud_voxelized");
+  this->declare_parameter<std::string>("output_noise_cloud_topic", "/noise_cloud");
 
   // RANSAC parameters
   this->declare_parameter<double>("ransac_distance_threshold", 0.02);
@@ -119,6 +124,7 @@ void FloorRemovalServerNode::loadParameters()
   output_no_floor_cloud_topic_ = this->get_parameter("output_no_floor_cloud_topic").as_string();
   output_floor_cloud_voxelized_topic_ = this->get_parameter("output_floor_cloud_voxelized_topic").as_string();
   output_no_floor_cloud_voxelized_topic_ = this->get_parameter("output_no_floor_cloud_voxelized_topic").as_string();
+  output_noise_cloud_topic_ = this->get_parameter("output_noise_cloud_topic").as_string();
 }
 
 void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
@@ -156,23 +162,27 @@ void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::
   // Convert PCL clouds back to ROS messages
   sensor_msgs::msg::PointCloud2 floor_msg, no_floor_msg;
   sensor_msgs::msg::PointCloud2 floor_voxelized_msg, no_floor_voxelized_msg;
+  sensor_msgs::msg::PointCloud2 noise_msg;
 
   pcl::toROSMsg(*result.floor_cloud, floor_msg);
   pcl::toROSMsg(*result.no_floor_cloud, no_floor_msg);
   pcl::toROSMsg(*result.floor_cloud_voxelized, floor_voxelized_msg);
   pcl::toROSMsg(*result.no_floor_cloud_voxelized, no_floor_voxelized_msg);
+  pcl::toROSMsg(*result.noise_cloud, noise_msg);
 
   // Set headers
   floor_msg.header = msg->header;
   no_floor_msg.header = msg->header;
   floor_voxelized_msg.header = msg->header;
   no_floor_voxelized_msg.header = msg->header;
+  noise_msg.header = msg->header;
 
   // Publish (even if plane not found, transformed clouds will be published)
   floor_cloud_pub_->publish(floor_msg);
   no_floor_cloud_pub_->publish(no_floor_msg);
   floor_cloud_voxelized_pub_->publish(floor_voxelized_msg);
   no_floor_cloud_voxelized_pub_->publish(no_floor_voxelized_msg);
+  noise_cloud_pub_->publish(noise_msg);
 }
 
 }  // namespace floor_removal_rgbd

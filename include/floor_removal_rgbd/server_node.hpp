@@ -52,6 +52,7 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr no_floor_cloud_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr floor_cloud_voxelized_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr no_floor_cloud_voxelized_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr noise_cloud_pub_;
 
   // Core algorithm
   std::unique_ptr<PlaneRemover> plane_remover_;
@@ -62,6 +63,7 @@ private:
   std::string output_no_floor_cloud_topic_;
   std::string output_floor_cloud_voxelized_topic_;
   std::string output_no_floor_cloud_voxelized_topic_;
+  std::string output_noise_cloud_topic_;
 
   // Debug counter for periodic logging
   int debug_counter_ = 0;

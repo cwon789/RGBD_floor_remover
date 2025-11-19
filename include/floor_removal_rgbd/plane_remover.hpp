@@ -59,6 +59,7 @@ struct PlaneRemovalResult
   pcl::PointCloud<pcl::PointXYZ>::Ptr floor_cloud_voxelized;
   pcl::PointCloud<pcl::PointXYZ>::Ptr no_floor_cloud_voxelized;
   pcl::PointCloud<pcl::PointXYZ>::Ptr no_floor_cloud_voxelized_2d_projected;  // 2D projection of no_floor_cloud_voxelized
+  pcl::PointCloud<pcl::PointXYZ>::Ptr noise_cloud;  // Removed noise points
 
   // Plane coefficients: nx*x + ny*y + nz*z + d = 0
   double nx, ny, nz, d;
@@ -69,6 +70,7 @@ struct PlaneRemovalResult
   size_t floor_points = 0;
   size_t voxelized_points = 0;
   size_t floor_region_points = 0;
+  size_t noise_points = 0;
 
 
   PlaneRemovalResult()
@@ -77,6 +79,7 @@ struct PlaneRemovalResult
     , floor_cloud_voxelized(new pcl::PointCloud<pcl::PointXYZ>)
     , no_floor_cloud_voxelized(new pcl::PointCloud<pcl::PointXYZ>)
     , no_floor_cloud_voxelized_2d_projected(new pcl::PointCloud<pcl::PointXYZ>)
+    , noise_cloud(new pcl::PointCloud<pcl::PointXYZ>)
     , nx(0), ny(0), nz(0), d(0)
   {}
 };
@@ -208,11 +211,13 @@ private:
    * @param ny Plane normal Y
    * @param nz Plane normal Z
    * @param d Plane distance
+   * @param noise_cloud Output: removed noise points
    * @return Filtered cloud with noise removed
    */
   pcl::PointCloud<pcl::PointXYZ>::Ptr removeFloorNoise(
     const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
-    double nx, double ny, double nz, double d);
+    double nx, double ny, double nz, double d,
+    pcl::PointCloud<pcl::PointXYZ>::Ptr& noise_cloud);
 
   PlaneRemoverParams params_;
 

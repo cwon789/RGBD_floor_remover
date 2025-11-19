@@ -6,6 +6,7 @@ floor_removal_node:
     output_no_floor_cloud_topic: "/no_floor_cloud"
     output_floor_cloud_voxelized_topic: "/floor_cloud_voxelized"
     output_no_floor_cloud_voxelized_topic: "/no_floor_cloud_voxelized"
+    output_noise_cloud_topic: "/noise_cloud"
 
     # RANSAC Parameters
     ransac_distance_threshold: 0.02    # meters - inlier threshold
