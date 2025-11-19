@@ -41,6 +41,12 @@ struct PlaneRemoverParams
   bool use_voxel_grid = true;               // enable voxel grid downsampling
   double voxel_leaf_size = 0.005;           // voxel size (meters)
 
+  // Noise removal parameters (post-processing after floor removal)
+  bool enable_noise_removal = true;         // enable outlier removal for isolated floor remnants
+  double noise_radius_search = 0.05;        // meters - radius to search for neighbors
+  int noise_min_neighbors = 5;              // minimum neighbors within radius to keep point
+  double noise_floor_height_margin = 0.15;  // meters - only remove noise near floor (Z < floor + margin)
+
   // Detection range parameters
   double max_detection_distance = 10.0;     // maximum detection distance from camera (meters)
   double max_height = 3.0;                  // maximum height (Z coordinate) in robot frame (meters)
@@ -251,6 +257,16 @@ private:
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr projectTo2D(
     const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
     double nx, double ny, double nz, double d);
+
+  /**
+   * @brief Remove isolated noise points near floor (radius outlier removal)
+   * @param cloud Input cloud
+   * @param floor_z Detected floor Z height
+   * @return Filtered cloud with noise removed
+   */
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr removeFloorNoise(
+    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+    double floor_z);
 
   PlaneRemoverParams params_;
 };

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <unordered_map>
 
 namespace floor_removal_rgbd
 {
@@ -124,7 +125,12 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>
   removePointsBelowPlane(cloud_voxelized, nx, ny, nz, d,
                          result.floor_cloud_voxelized, result.no_floor_cloud_voxelized);
 
-  // Step 8: Project no_floor_cloud_voxelized to 2D (floor removal plane)
+  // Step 8: Remove noise from voxelized no-floor cloud ONLY (skip full resolution for speed)
+  // Calculate approximate floor Z height (project origin to plane)
+  double floor_z = -d / nz;  // Simplified for horizontal-ish floor
+  result.no_floor_cloud_voxelized = removeFloorNoise(result.no_floor_cloud_voxelized, floor_z);
+
+  // Step 10: Project no_floor_cloud_voxelized to 2D (floor removal plane)
   // Calculate the plane used for floor removal (shifted by threshold)
   double removal_d = d - (params_.floor_removal_thickness / 2.0 + params_.floor_margin);
   result.no_floor_cloud_voxelized_2d_projected = projectTo2D(result.no_floor_cloud_voxelized, nx, ny, nz, removal_d);
@@ -453,6 +459,93 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::projectTo2D(
   cloud_2d->is_dense = false;
 
   return cloud_2d;
+}
+
+pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::removeFloorNoise(
+  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+  double floor_z)
+{
+  if (!params_.enable_noise_removal || cloud->points.empty()) {
+    return cloud;
+  }
+
+  // Fast voxel-based noise removal (much faster than KD-tree)
+  // Use a simple 3D grid hash map to count neighbors
+  const double voxel_size = params_.noise_radius_search;
+  const double floor_margin = params_.noise_floor_height_margin;
+
+  // Create voxel grid hash map
+  std::unordered_map<size_t, int> voxel_count;
+  auto voxel_hash = [&](double x, double y, double z) -> size_t {
+    int ix = static_cast<int>(std::floor(x / voxel_size));
+    int iy = static_cast<int>(std::floor(y / voxel_size));
+    int iz = static_cast<int>(std::floor(z / voxel_size));
+    // Simple hash combining
+    return ((size_t)ix * 73856093) ^ ((size_t)iy * 19349663) ^ ((size_t)iz * 83492791);
+  };
+
+  // First pass: count points in each voxel (only for floor region)
+  for (const auto& point : cloud->points) {
+    if (point.z < floor_z + floor_margin) {
+      size_t hash = voxel_hash(point.x, point.y, point.z);
+      voxel_count[hash]++;
+    }
+  }
+
+  // Second pass: filter based on neighborhood occupancy (3x3x3 voxels)
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZRGB>);
+  cloud_filtered->header = cloud->header;
+  cloud_filtered->points.reserve(cloud->points.size());
+
+  size_t noise_removed = 0;
+
+  auto voxel_hash_ijk = [](int ix, int iy, int iz) -> size_t {
+    return ((size_t)ix * 73856093) ^ ((size_t)iy * 19349663) ^ ((size_t)iz * 83492791);
+  };
+
+  for (const auto& point : cloud->points) {
+    // Only filter points near floor
+    if (point.z >= floor_z + floor_margin) {
+      cloud_filtered->points.push_back(point);
+      continue;
+    }
+
+    // Get voxel indices for current point
+    int ix = static_cast<int>(std::floor(point.x / voxel_size));
+    int iy = static_cast<int>(std::floor(point.y / voxel_size));
+    int iz = static_cast<int>(std::floor(point.z / voxel_size));
+
+    // Check 3x3x3 neighborhood (27 voxels including current)
+    int neighbor_count = 0;
+    for (int dx = -1; dx <= 1; dx++) {
+      for (int dy = -1; dy <= 1; dy++) {
+        for (int dz = -1; dz <= 1; dz++) {
+          size_t neighbor_hash = voxel_hash_ijk(ix + dx, iy + dy, iz + dz);
+          auto it = voxel_count.find(neighbor_hash);
+          if (it != voxel_count.end()) {
+            neighbor_count += it->second;
+          }
+        }
+      }
+    }
+
+    // Keep point if neighborhood has enough points
+    if (neighbor_count >= params_.noise_min_neighbors) {
+      cloud_filtered->points.push_back(point);
+    } else {
+      noise_removed++;
+    }
+  }
+
+  cloud_filtered->width = cloud_filtered->points.size();
+  cloud_filtered->height = 1;
+  cloud_filtered->is_dense = false;
+
+  if (noise_removed > 0) {
+    std::cout << "[DEBUG] Removed " << noise_removed << " isolated floor noise points" << std::endl;
+  }
+
+  return cloud_filtered;
 }
 
 }  // namespace floor_removal_rgbd

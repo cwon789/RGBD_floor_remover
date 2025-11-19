@@ -30,6 +30,13 @@ floor_removal_node:
     use_voxel_grid: true             # enable voxel grid downsampling
     voxel_leaf_size: 0.02            # voxel size (meters) - 2cm for better wall detection
 
+    # Noise removal (post-processing after floor removal)
+    # Removes isolated floor remnants and small noise clusters near floor
+    enable_noise_removal: true       # enable radius outlier removal for floor noise
+    noise_radius_search: 0.05        # meters - search radius (5cm) for neighbor check
+    noise_min_neighbors: 5           # minimum neighbors to keep point (not isolated)
+    noise_floor_height_margin: 0.15  # meters - only filter points near floor (Z < floor + margin)
+
     # Detection range parameters
     max_detection_distance: 15.0     # maximum detection distance from camera (meters)
     max_height: 3.0                  # maximum height (Z coordinate) in robot frame (meters)

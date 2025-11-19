@@ -32,6 +32,10 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   params.floor_margin = this->get_parameter("floor_margin").as_double();
   params.use_voxel_grid = this->get_parameter("use_voxel_grid").as_bool();
   params.voxel_leaf_size = this->get_parameter("voxel_leaf_size").as_double();
+  params.enable_noise_removal = this->get_parameter("enable_noise_removal").as_bool();
+  params.noise_radius_search = this->get_parameter("noise_radius_search").as_double();
+  params.noise_min_neighbors = this->get_parameter("noise_min_neighbors").as_int();
+  params.noise_floor_height_margin = this->get_parameter("noise_floor_height_margin").as_double();
   params.max_detection_distance = this->get_parameter("max_detection_distance").as_double();
   params.max_height = this->get_parameter("max_height").as_double();
 
@@ -124,6 +128,12 @@ void FloorRemovalServerNode::declareParameters()
   // Voxel grid parameters
   this->declare_parameter<bool>("use_voxel_grid", true);
   this->declare_parameter<double>("voxel_leaf_size", 0.005);
+
+  // Noise removal parameters
+  this->declare_parameter<bool>("enable_noise_removal", true);
+  this->declare_parameter<double>("noise_radius_search", 0.05);
+  this->declare_parameter<int>("noise_min_neighbors", 5);
+  this->declare_parameter<double>("noise_floor_height_margin", 0.15);
 
   // Detection range parameters
   this->declare_parameter<double>("max_detection_distance", 10.0);
