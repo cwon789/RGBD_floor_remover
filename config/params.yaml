@@ -1,105 +1,38 @@
 floor_removal_node:
   ros__parameters:
-    # ========================================
-    # Common Parameters (always used)
-    # ========================================
-
-    # Input/Output topics
+    # Input/Output Topics
     input_cloud_topic: "/lx_camera_node/LxCamera_Cloud"
     output_floor_cloud_topic: "/floor_cloud"
     output_no_floor_cloud_topic: "/no_floor_cloud"
     output_floor_cloud_voxelized_topic: "/floor_cloud_voxelized"
     output_no_floor_cloud_voxelized_topic: "/no_floor_cloud_voxelized"
 
-    # RANSAC parameters for floor detection
-    ransac_distance_threshold: 0.03  # meters - points within this distance are considered inliers
-                                     # Increased for uneven warehouse floors
-    ransac_max_iterations: 150       # maximum iterations for RANSAC
-                                     # More iterations for robust detection in cluttered environment
-    floor_normal_z_threshold: 0.7    # minimum Z component of normal in robot frame (Z=up)
-                                     # 0.7 = ~45° tolerance for tilted floor (cos(45°)≈0.7)
+    # RANSAC Parameters
+    ransac_distance_threshold: 0.02    # meters - inlier threshold
+    ransac_max_iterations: 150         # RANSAC iterations
 
-    # Floor region parameters (robot frame: X=forward, Y=left, Z=up)
-    floor_detection_thickness: 0.01  # meters - thickness for RANSAC plane detection
-                                     # Larger to handle uneven warehouse floors (bumps, cracks)
-    floor_removal_thickness: 0.01    # meters - thickness for actual floor removal (inflation)
-                                     # Balance: remove floor but preserve 10cm pallet bottoms
-    floor_margin: 0.0               # additional margin around detected floor plane (meters)
+    # Floor Detection Region (Depth-based, Extrinsic-independent)
+    # Camera frame: X=right, Y=down, Z=forward/depth
+    floor_detection_min_depth: 0.3     # meters - min depth for floor detection
+    floor_detection_max_depth: 2.0     # meters - max depth for floor detection
+    min_points_for_plane: 50           # minimum points for RANSAC
 
-    # Voxel grid downsampling (reduces computation and noise)
-    use_voxel_grid: true             # enable voxel grid downsampling
-    voxel_leaf_size: 0.02            # voxel size (meters) - 2cm for better wall detection
+    # Floor Plane Validation
+    floor_normal_y_threshold: 0.7      # min abs(Y) of normal (0.7 ≈ 45° tolerance)
 
-    # Noise removal (post-processing after floor removal)
-    # Removes isolated floor remnants and small noise clusters near floor
-    enable_noise_removal: true       # enable radius outlier removal for floor noise
-    noise_radius_search: 0.05        # meters - search radius (5cm) for neighbor check
-    noise_min_neighbors: 5           # minimum neighbors to keep point (not isolated)
-    noise_floor_height_margin: 0.15  # meters - only filter points near floor (Z < floor + margin)
+    # Floor Removal
+    floor_removal_distance_threshold: 0.05  # meters - distance threshold
+    floor_margin: 0.01                      # meters - safety margin
 
-    # Detection range parameters
-    max_detection_distance: 15.0     # maximum detection distance from camera (meters)
-    max_height: 3.0                  # maximum height (Z coordinate) in robot frame (meters)
+    # Voxel Grid Downsampling
+    use_voxel_grid: true               # enable voxel downsampling
+    voxel_leaf_size: 0.01              # meters - voxel size
 
+    # Noise Removal
+    enable_noise_removal: true         # enable outlier removal
+    noise_radius_search: 0.05          # meters - search radius
+    noise_min_neighbors: 5             # minimum neighbors to keep
+    noise_plane_distance_margin: 0.15  # meters - filter near plane only
 
-    # ========================================
-    # Floor Detection Mode Selection
-    # ========================================
-    # Choose between auto detection (dynamic) or fixed height (manual)
-    use_auto_floor_detection: true   # true: auto detect from point cloud
-                                     # false: use fixed floor_height below
-
-
-    # ========================================
-    # Auto Mode Parameters (only used if use_auto_floor_detection: true)
-    # ========================================
-    # Automatically detect floor from lowest points in point cloud
-    # Robust to robot pitch/roll and sensor noise (ToF shadows)
-    # Tuned for warehouse/factory environments with FMR robot
-
-    auto_floor_percentile: 1.0      # percentile of lowest points (1.0 = lowest 1%)
-                                     # Used to find minimum floor Z
-    auto_floor_max_percentile: 10.0  # percentile for max Z (10.0 = lowest 10%)
-                                     # Handles tilted/pitched floor and FMR pitch/roll
-    min_valid_z: 0.0              # meters - minimum valid Z (filter ToF shadow noise)
-                                     # Points below -5cm are ToF sensor artifacts (shadows)
-    max_floor_z: 0.12               # meters - maximum floor height
-                                     # Just below 10cm pallet bottom
-                                     # Handles: FMR tilt (~8cm at 5°) + uneven floor (~3-4cm)
-
-
-    # ========================================
-    # Fixed Mode Parameters (only used if use_auto_floor_detection: false)
-    # ========================================
-    # Manually specify floor height in robot frame
-
-    floor_height: 0.0               # meters - floor Z coordinate in robot frame
-                                     # Points with Z <= floor_height + detection_thickness are considered floor
-
-
-    # ========================================
-    # Camera Extrinsic Parameters
-    # ========================================
-    # NOTE: Default optical->base transform is ALWAYS applied first
-    # (optical: X=right,Y=down,Z=forward -> base: X=forward,Y=left,Z=up)
-
-    use_default_transform: false      # true: use only default optical->base transform
-                                     # false: apply ADDITIONAL extrinsic on top of default
-
-
-    # ========================================
-    # Additional Extrinsic Transform (only used if use_default_transform: false)
-    # ========================================
-    # Applied AFTER default optical->base transform
-    # Compensates for camera mounting position/orientation relative to robot base
-
-    # Translation: additional camera offset in robot base frame (meters)
-    cam_tx: 0.0                      # X offset (forward)
-    cam_ty: 0.0                      # Y offset (left)
-    cam_tz: 0.35                     # Z offset (up)
-
-    # Rotation: Euler angles in robot base frame (radians) - ZYX order
-    cam_roll: 0.0                    # rotation around X axis (radians)
-    cam_pitch: 0.0                   # rotation around Y axis (radians)
-    cam_yaw: 0.0                     # rotation around Z axis (radians)
-
+    # Detection Range
+    max_detection_distance: 15.0       # meters - max distance from camera

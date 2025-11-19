@@ -18,53 +18,35 @@ namespace floor_removal_rgbd
 struct PlaneRemoverParams
 {
   // RANSAC parameters
-  double ransac_distance_threshold = 0.02;  // meters
-  int ransac_max_iterations = 100;
-  double floor_normal_z_threshold = 0.15;   // minimum Z component of normal
+  double ransac_distance_threshold = 0.02;  // meters - points within this distance are inliers
+  int ransac_max_iterations = 100;          // maximum iterations for RANSAC
 
-  // Floor height in robot frame (Z coordinate)
-  double floor_height = 0.0;                // meters - floor height in robot frame (Z coordinate)
+  // Floor detection region (camera optical frame: X=right, Y=down, Z=forward/depth)
+  // ToF cameras typically capture floor in near depth range
+  double floor_detection_min_depth = 0.3;   // meters - minimum depth for floor detection region
+  double floor_detection_max_depth = 2.0;   // meters - maximum depth for floor detection region
 
-  // Auto mode for tilted floor detection
-  bool use_auto_floor_detection = true;     // true: auto detect, false: use fixed floor_height
-  double auto_floor_percentile = 1.0;       // percentile of lowest points (1.0 = lowest 1%)
-  double auto_floor_max_percentile = 10.0;  // percentile for max Z (10.0 = lowest 10%)
-  double min_valid_z = -0.05;               // meters - minimum valid Z
-  double max_floor_z = 0.15;                // meters - maximum Z for floor
+  // Floor plane validation (camera optical frame)
+  // Floor normal should point upward, which is negative Y in camera frame (Y=down)
+  double floor_normal_y_threshold = 0.7;    // minimum abs(Y) component of normal (0.7 ≈ 45° tolerance)
 
-  // Floor region parameters
-  double floor_detection_thickness = 0.15;  // meters - region for RANSAC plane detection
-  double floor_removal_thickness = 0.03;    // meters - thickness for actual floor removal
-  double floor_margin = 0.01;               // additional margin around detected plane
+  // Floor removal parameters
+  double floor_removal_distance_threshold = 0.05;  // meters - distance from plane to consider as floor
+  double floor_margin = 0.01;                      // meters - additional safety margin
 
   // Voxel grid parameters
   bool use_voxel_grid = true;               // enable voxel grid downsampling
-  double voxel_leaf_size = 0.005;           // voxel size (meters)
+  double voxel_leaf_size = 0.01;            // voxel size (meters) - applied to detection region
 
   // Noise removal parameters (post-processing after floor removal)
   bool enable_noise_removal = true;         // enable outlier removal for isolated floor remnants
   double noise_radius_search = 0.05;        // meters - radius to search for neighbors
   int noise_min_neighbors = 5;              // minimum neighbors within radius to keep point
-  double noise_floor_height_margin = 0.15;  // meters - only remove noise near floor (Z < floor + margin)
+  double noise_plane_distance_margin = 0.15;  // meters - only filter points near detected plane
 
-  // Detection range parameters
+  // Detection range parameters (camera optical frame)
   double max_detection_distance = 10.0;     // maximum detection distance from camera (meters)
-  double max_height = 3.0;                  // maximum height (Z coordinate) in robot frame (meters)
-
-  // Camera extrinsic parameters (camera optical frame to robot base frame)
-  // Translation: camera position in robot frame (meters)
-  double cam_tx = 0.0;  // X offset (forward)
-  double cam_ty = 0.0;  // Y offset (left)
-  double cam_tz = 0.0;  // Z offset (up)
-
-  // Rotation: Euler angles (radians) - applied in order: Roll(X) -> Pitch(Y) -> Yaw(Z)
-  double cam_roll = 0.0;   // rotation around X axis (radians)
-  double cam_pitch = 0.0;  // rotation around Y axis (radians)
-  double cam_yaw = 0.0;    // rotation around Z axis (radians)
-
-  // Use default optical frame to base frame transform (ignores above extrinsics)
-  // Default: cam_optical (X=right, Y=down, Z=forward) -> base (X=forward, Y=left, Z=up)
-  bool use_default_transform = true;
+  double min_points_for_plane = 50;         // minimum points in detection region for RANSAC
 };
 
 /**
@@ -103,11 +85,13 @@ struct PlaneRemovalResult
  * @brief Core algorithm for floor plane detection and removal
  *
  * This class handles the detection and removal of floor planes from point clouds.
- * It uses RANSAC for plane fitting and operates in the robot coordinate frame.
+ * It uses RANSAC for plane fitting and operates in the camera optical frame.
+ * Extrinsic-independent approach using depth-based floor detection region.
  *
- * Input: Camera optical frame (X=right, Y=down, Z=forward)
- * Processing: Robot frame (X=forward, Y=left, Z=up)
- * Output: Robot frame (X=forward, Y=left, Z=up)
+ * Coordinate frame: Camera optical (X=right, Y=down, Z=forward/depth)
+ * Input: Camera optical frame point cloud
+ * Processing: Camera optical frame (extrinsic-independent)
+ * Output: Camera optical frame point cloud with floor removed
  */
 class PlaneRemover
 {
@@ -144,75 +128,34 @@ public:
 
 private:
   /**
-   * @brief Transform point cloud from camera optical frame to standard robot frame
-   * @param cloud_camera Input cloud in camera frame
-   * @return Transformed cloud in standard frame
-   */
-  pcl::PointCloud<pcl::PointXYZ>::Ptr transformToStandardFrame(
-    const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud_camera);
-
-  /**
    * @brief Apply voxel grid downsampling
-   * @param cloud Input cloud
+   * @param cloud Input cloud in camera optical frame
    * @return Downsampled cloud
    */
   pcl::PointCloud<pcl::PointXYZ>::Ptr applyVoxelGrid(
     const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud);
 
   /**
-   * @brief Filter points by maximum detection distance
-   * @param cloud Input cloud
+   * @brief Filter points by maximum detection distance from camera
+   * @param cloud Input cloud in camera optical frame
    * @return Filtered cloud with points within max_detection_distance
    */
   pcl::PointCloud<pcl::PointXYZ>::Ptr filterByDistance(
     const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud);
 
   /**
-   * @brief Find minimum Z (robot frame: Z=up)
-   * @param cloud Input cloud
-   * @return Minimum Z value
+   * @brief Extract floor detection region based on depth (Z axis in camera frame)
+   * @param cloud Input cloud in camera optical frame
+   * @return Floor detection region point cloud (depth-filtered)
    */
-  double findMinZ(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud);
-
-  /**
-   * @brief Find minimum Z at given percentile
-   * @param cloud Input cloud
-   * @param percentile Percentile (1.0 = lowest 1%)
-   * @return Z value at percentile
-   */
-  double findMinZPercentile(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, double percentile);
-
-  /**
-   * @brief Find maximum Z at given percentile
-   * @param cloud Input cloud
-   * @param percentile Percentile (10.0 = lowest 10%)
-   * @return Z value at percentile
-   */
-  double findMaxZPercentile(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, double percentile);
-
-  /**
-   * @brief Filter out invalid Z points
-   * @param cloud Input cloud
-   * @return Filtered cloud
-   */
-  pcl::PointCloud<pcl::PointXYZ>::Ptr filterByValidZ(
+  pcl::PointCloud<pcl::PointXYZ>::Ptr extractFloorDetectionRegion(
     const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud);
 
   /**
-   * @brief Extract floor region points for RANSAC
-   * @param cloud Input cloud
-   * @param min_z Minimum Z value
-   * @param max_z Maximum Z value
-   * @return Floor region point cloud
-   */
-  pcl::PointCloud<pcl::PointXYZ>::Ptr extractFloorRegion(
-    const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, double min_z, double max_z);
-
-  /**
-   * @brief Detect floor plane using RANSAC on voxelized cloud
-   * @param cloud Voxelized point cloud
+   * @brief Detect floor plane using RANSAC on detection region
+   * @param cloud Floor detection region point cloud (depth-filtered)
    * @param nx Output: plane normal X
-   * @param ny Output: plane normal Y
+   * @param ny Output: plane normal Y (should be negative for floor in camera frame)
    * @param nz Output: plane normal Z
    * @param d Output: plane distance
    * @param inlier_ratio Output: ratio of inliers
@@ -223,31 +166,31 @@ private:
     double& nx, double& ny, double& nz, double& d, double& inlier_ratio);
 
   /**
-   * @brief Validate detected plane
-   * @param nz Plane normal Z
-   * @return True if plane is valid
+   * @brief Validate detected plane (camera frame: floor normal should point up = -Y)
+   * @param ny Plane normal Y component (should be negative with large magnitude)
+   * @return True if plane is valid floor plane
    */
-  bool isPlaneValid(double nz);
+  bool isPlaneValid(double ny);
 
   /**
-   * @brief Remove points below the detected plane (floor removal)
-   * @param cloud Input cloud in robot frame
+   * @brief Remove points on or near the detected plane (floor removal)
+   * @param cloud Input cloud in camera optical frame
    * @param nx Plane normal X
    * @param ny Plane normal Y
    * @param nz Plane normal Z
    * @param d Plane distance
-   * @param floor_cloud Output: floor points (at or below plane)
-   * @param no_floor_cloud Output: non-floor points (above plane)
+   * @param floor_cloud Output: floor points (on or near plane)
+   * @param no_floor_cloud Output: non-floor points (away from plane)
    */
-  void removePointsBelowPlane(
+  void removePointsOnPlane(
     const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
     double nx, double ny, double nz, double d,
     pcl::PointCloud<pcl::PointXYZ>::Ptr& floor_cloud,
     pcl::PointCloud<pcl::PointXYZ>::Ptr& no_floor_cloud);
 
   /**
-   * @brief Project point cloud to 2D plane (Z=0)
-   * @param cloud Input cloud
+   * @brief Project point cloud to 2D plane
+   * @param cloud Input cloud in camera optical frame
    * @param nx Plane normal X
    * @param ny Plane normal Y
    * @param nz Plane normal Z
@@ -259,14 +202,17 @@ private:
     double nx, double ny, double nz, double d);
 
   /**
-   * @brief Remove isolated noise points near floor (radius outlier removal)
-   * @param cloud Input cloud
-   * @param floor_z Detected floor Z height
+   * @brief Remove isolated noise points near detected floor plane
+   * @param cloud Input cloud in camera optical frame
+   * @param nx Plane normal X
+   * @param ny Plane normal Y
+   * @param nz Plane normal Z
+   * @param d Plane distance
    * @return Filtered cloud with noise removed
    */
   pcl::PointCloud<pcl::PointXYZ>::Ptr removeFloorNoise(
     const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
-    double floor_z);
+    double nx, double ny, double nz, double d);
 
   PlaneRemoverParams params_;
 

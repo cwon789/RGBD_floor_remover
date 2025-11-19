@@ -20,33 +20,19 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   PlaneRemoverParams params;
   params.ransac_distance_threshold = this->get_parameter("ransac_distance_threshold").as_double();
   params.ransac_max_iterations = this->get_parameter("ransac_max_iterations").as_int();
-  params.floor_normal_z_threshold = this->get_parameter("floor_normal_z_threshold").as_double();
-  params.floor_height = this->get_parameter("floor_height").as_double();
-  params.use_auto_floor_detection = this->get_parameter("use_auto_floor_detection").as_bool();
-  params.auto_floor_percentile = this->get_parameter("auto_floor_percentile").as_double();
-  params.auto_floor_max_percentile = this->get_parameter("auto_floor_max_percentile").as_double();
-  params.min_valid_z = this->get_parameter("min_valid_z").as_double();
-  params.max_floor_z = this->get_parameter("max_floor_z").as_double();
-  params.floor_detection_thickness = this->get_parameter("floor_detection_thickness").as_double();
-  params.floor_removal_thickness = this->get_parameter("floor_removal_thickness").as_double();
+  params.floor_detection_min_depth = this->get_parameter("floor_detection_min_depth").as_double();
+  params.floor_detection_max_depth = this->get_parameter("floor_detection_max_depth").as_double();
+  params.floor_normal_y_threshold = this->get_parameter("floor_normal_y_threshold").as_double();
+  params.floor_removal_distance_threshold = this->get_parameter("floor_removal_distance_threshold").as_double();
   params.floor_margin = this->get_parameter("floor_margin").as_double();
   params.use_voxel_grid = this->get_parameter("use_voxel_grid").as_bool();
   params.voxel_leaf_size = this->get_parameter("voxel_leaf_size").as_double();
   params.enable_noise_removal = this->get_parameter("enable_noise_removal").as_bool();
   params.noise_radius_search = this->get_parameter("noise_radius_search").as_double();
   params.noise_min_neighbors = this->get_parameter("noise_min_neighbors").as_int();
-  params.noise_floor_height_margin = this->get_parameter("noise_floor_height_margin").as_double();
+  params.noise_plane_distance_margin = this->get_parameter("noise_plane_distance_margin").as_double();
   params.max_detection_distance = this->get_parameter("max_detection_distance").as_double();
-  params.max_height = this->get_parameter("max_height").as_double();
-
-  // Camera extrinsic parameters
-  params.use_default_transform = this->get_parameter("use_default_transform").as_bool();
-  params.cam_tx = this->get_parameter("cam_tx").as_double();
-  params.cam_ty = this->get_parameter("cam_ty").as_double();
-  params.cam_tz = this->get_parameter("cam_tz").as_double();
-  params.cam_roll = this->get_parameter("cam_roll").as_double();
-  params.cam_pitch = this->get_parameter("cam_pitch").as_double();
-  params.cam_yaw = this->get_parameter("cam_yaw").as_double();
+  params.min_points_for_plane = this->get_parameter("min_points_for_plane").as_int();
 
   plane_remover_ = std::make_unique<PlaneRemover>(params);
 
@@ -68,33 +54,23 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   no_floor_cloud_voxelized_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
     output_no_floor_cloud_voxelized_topic_, 10);
 
-  RCLCPP_INFO(this->get_logger(), "Floor Removal Server Node initialized");
+  RCLCPP_INFO(this->get_logger(), "Floor Removal Server Node initialized (Extrinsic-independent)");
   RCLCPP_INFO(this->get_logger(), "  Input: %s", input_cloud_topic_.c_str());
   RCLCPP_INFO(this->get_logger(), "  Output floor: %s", output_floor_cloud_topic_.c_str());
   RCLCPP_INFO(this->get_logger(), "  Output no-floor: %s", output_no_floor_cloud_topic_.c_str());
   RCLCPP_INFO(this->get_logger(), "  Output floor (voxelized): %s", output_floor_cloud_voxelized_topic_.c_str());
   RCLCPP_INFO(this->get_logger(), "  Output no-floor (voxelized): %s", output_no_floor_cloud_voxelized_topic_.c_str());
-  RCLCPP_INFO(this->get_logger(), "  Auto floor detection: %s", params.use_auto_floor_detection ? "enabled" : "disabled");
-  if (params.use_auto_floor_detection) {
-    RCLCPP_INFO(this->get_logger(), "  Floor percentile: %.1f%% (min), %.1f%% (max)",
-                params.auto_floor_percentile, params.auto_floor_max_percentile);
-    RCLCPP_INFO(this->get_logger(), "  Valid Z range: [%.3f, %.3f] m", params.min_valid_z, params.max_floor_z);
-  } else {
-    RCLCPP_INFO(this->get_logger(), "  Floor height: %.3f m", params.floor_height);
-  }
-  RCLCPP_INFO(this->get_logger(), "  Max detection distance: %.3f m", params.max_detection_distance);
-  RCLCPP_INFO(this->get_logger(), "  Max height: %.3f m", params.max_height);
+  RCLCPP_INFO(this->get_logger(), "  Floor detection depth range: [%.2f, %.2f] m",
+              params.floor_detection_min_depth, params.floor_detection_max_depth);
+  RCLCPP_INFO(this->get_logger(), "  Floor normal Y threshold: %.2f (camera frame)",
+              params.floor_normal_y_threshold);
+  RCLCPP_INFO(this->get_logger(), "  Floor removal distance threshold: %.3f m",
+              params.floor_removal_distance_threshold);
+  RCLCPP_INFO(this->get_logger(), "  Max detection distance: %.2f m", params.max_detection_distance);
   RCLCPP_INFO(this->get_logger(), "  Voxel grid: %s (leaf size: %.3f m)",
               params.use_voxel_grid ? "enabled" : "disabled",
               params.voxel_leaf_size);
-  RCLCPP_INFO(this->get_logger(), "  Camera transform: %s",
-              params.use_default_transform ? "default (optical->base)" : "custom extrinsic");
-  if (!params.use_default_transform) {
-    RCLCPP_INFO(this->get_logger(), "  Extrinsic T: [%.3f, %.3f, %.3f] m",
-                params.cam_tx, params.cam_ty, params.cam_tz);
-    RCLCPP_INFO(this->get_logger(), "  Extrinsic R: [%.3f, %.3f, %.3f] rad",
-                params.cam_roll, params.cam_pitch, params.cam_yaw);
-  }
+  RCLCPP_INFO(this->get_logger(), "  Noise removal: %s", params.enable_noise_removal ? "enabled" : "disabled");
 }
 
 void FloorRemovalServerNode::declareParameters()
@@ -109,44 +85,31 @@ void FloorRemovalServerNode::declareParameters()
   // RANSAC parameters
   this->declare_parameter<double>("ransac_distance_threshold", 0.02);
   this->declare_parameter<int>("ransac_max_iterations", 100);
-  this->declare_parameter<double>("floor_normal_z_threshold", 0.15);
 
-  this->declare_parameter<double>("floor_height", 0.0);
+  // Floor detection region (depth-based)
+  this->declare_parameter<double>("floor_detection_min_depth", 0.3);
+  this->declare_parameter<double>("floor_detection_max_depth", 2.0);
+  this->declare_parameter<int>("min_points_for_plane", 50);
 
-  // Auto floor detection parameters
-  this->declare_parameter<bool>("use_auto_floor_detection", true);
-  this->declare_parameter<double>("auto_floor_percentile", 1.0);
-  this->declare_parameter<double>("auto_floor_max_percentile", 10.0);
-  this->declare_parameter<double>("min_valid_z", -0.05);
-  this->declare_parameter<double>("max_floor_z", 0.15);
+  // Floor plane validation
+  this->declare_parameter<double>("floor_normal_y_threshold", 0.7);
 
-  // Floor region parameters
-  this->declare_parameter<double>("floor_detection_thickness", 0.15);
-  this->declare_parameter<double>("floor_removal_thickness", 0.03);
+  // Floor removal parameters
+  this->declare_parameter<double>("floor_removal_distance_threshold", 0.05);
   this->declare_parameter<double>("floor_margin", 0.01);
 
   // Voxel grid parameters
   this->declare_parameter<bool>("use_voxel_grid", true);
-  this->declare_parameter<double>("voxel_leaf_size", 0.005);
+  this->declare_parameter<double>("voxel_leaf_size", 0.01);
 
   // Noise removal parameters
   this->declare_parameter<bool>("enable_noise_removal", true);
   this->declare_parameter<double>("noise_radius_search", 0.05);
   this->declare_parameter<int>("noise_min_neighbors", 5);
-  this->declare_parameter<double>("noise_floor_height_margin", 0.15);
+  this->declare_parameter<double>("noise_plane_distance_margin", 0.15);
 
   // Detection range parameters
   this->declare_parameter<double>("max_detection_distance", 10.0);
-  this->declare_parameter<double>("max_height", 3.0);
-
-  // Camera extrinsic parameters
-  this->declare_parameter<bool>("use_default_transform", true);
-  this->declare_parameter<double>("cam_tx", 0.0);
-  this->declare_parameter<double>("cam_ty", 0.0);
-  this->declare_parameter<double>("cam_tz", 0.0);
-  this->declare_parameter<double>("cam_roll", 0.0);
-  this->declare_parameter<double>("cam_pitch", 0.0);
-  this->declare_parameter<double>("cam_yaw", 0.0);
 }
 
 void FloorRemovalServerNode::loadParameters()

@@ -37,76 +37,56 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZ>::P
 
   result.total_points = cloud_camera->points.size();
 
-  // Step 1: Transform to robot frame (X=forward, Y=left, Z=up)
-  auto cloud_robot = transformToStandardFrame(cloud_camera);
+  // Step 1: Filter by max detection distance (camera frame: Z=forward/depth)
+  auto cloud_filtered = filterByDistance(cloud_camera);
 
-  // Step 2: Filter by max detection distance (in robot frame, X=forward is depth)
-  auto cloud_filtered = filterByDistance(cloud_robot);
-
-  // Step 3: Apply voxel grid downsampling if enabled (work in robot frame)
-  auto cloud_voxelized = cloud_filtered;
-  if (params_.use_voxel_grid) {
-    cloud_voxelized = applyVoxelGrid(cloud_filtered);
-    result.voxelized_points = cloud_voxelized->points.size();
-  } else {
-    result.voxelized_points = cloud_filtered->points.size();
-  }
-
-  // Step 3.5: Filter out invalid Z points
-  auto cloud_valid = filterByValidZ(cloud_voxelized);
-
-  // Step 4: Determine floor Z range
-  double min_z, max_z;
-  if (params_.use_auto_floor_detection) {
-    min_z = findMinZPercentile(cloud_valid, params_.auto_floor_percentile);
-    max_z = findMaxZPercentile(cloud_valid, params_.auto_floor_max_percentile);
-
-    // Clamp to valid range
-    if (min_z < params_.min_valid_z) min_z = params_.min_valid_z;
-    if (min_z > params_.max_floor_z) min_z = params_.max_floor_z;
-    if (max_z < min_z) max_z = min_z + params_.floor_detection_thickness;
-    if (max_z > params_.max_floor_z + 0.15) max_z = params_.max_floor_z + 0.15;
-  } else {
-    min_z = params_.floor_height;
-    max_z = min_z + params_.floor_detection_thickness;
-  }
-
-  auto floor_region = extractFloorRegion(cloud_voxelized, min_z, max_z);
+  // Step 2: Extract floor detection region based on depth
+  auto floor_region = extractFloorDetectionRegion(cloud_filtered);
   result.floor_region_points = floor_region->points.size();
 
-  if (floor_region->points.empty()) {
+  if (floor_region->points.size() < params_.min_points_for_plane) {
     // State change: plane lost
     if (prev_plane_found_) {
-      std::cout << "[WARNING] Floor plane LOST - floor region is empty" << std::endl;
+      std::cout << "[WARNING] Floor plane LOST - insufficient points in detection region ("
+                << floor_region->points.size() << " < " << params_.min_points_for_plane << ")" << std::endl;
       prev_plane_found_ = false;
     }
     result.no_floor_cloud = cloud_filtered;
-    result.no_floor_cloud_voxelized = cloud_voxelized;
+    result.no_floor_cloud_voxelized = cloud_filtered;
     return result;
   }
 
-  // Step 5: Detect floor plane using RANSAC on floor region
+  // Step 3: Apply voxel grid downsampling to detection region if enabled
+  auto floor_region_voxelized = floor_region;
+  if (params_.use_voxel_grid) {
+    floor_region_voxelized = applyVoxelGrid(floor_region);
+    result.voxelized_points = floor_region_voxelized->points.size();
+  } else {
+    result.voxelized_points = floor_region->points.size();
+  }
+
+  // Step 4: Detect floor plane using RANSAC on detection region
   double nx, ny, nz, d, inlier_ratio;
-  if (!detectFloorPlane(floor_region, nx, ny, nz, d, inlier_ratio)) {
+  if (!detectFloorPlane(floor_region_voxelized, nx, ny, nz, d, inlier_ratio)) {
     // State change: plane lost
     if (prev_plane_found_) {
       std::cout << "[WARNING] Floor plane LOST - RANSAC detection failed" << std::endl;
       prev_plane_found_ = false;
     }
     result.no_floor_cloud = cloud_filtered;
-    result.no_floor_cloud_voxelized = cloud_voxelized;
+    result.no_floor_cloud_voxelized = cloud_filtered;
     return result;
   }
 
-  // Step 6: Validate plane (in robot frame, nz should be significant)
-  if (!isPlaneValid(nz)) {
+  // Step 5: Validate plane (camera frame: ny should be negative and significant)
+  if (!isPlaneValid(ny)) {
     // State change: plane lost
     if (prev_plane_found_) {
-      std::cout << "[WARNING] Floor plane LOST - validation failed (nz=" << nz << ")" << std::endl;
+      std::cout << "[WARNING] Floor plane LOST - validation failed (ny=" << ny << ")" << std::endl;
       prev_plane_found_ = false;
     }
     result.no_floor_cloud = cloud_filtered;
-    result.no_floor_cloud_voxelized = cloud_voxelized;
+    result.no_floor_cloud_voxelized = cloud_filtered;
     return result;
   }
 
@@ -119,93 +99,86 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZ>::P
   // State change: plane newly found
   if (!prev_plane_found_) {
     std::cout << "[INFO] Floor plane FOUND: normal=[" << nx << ", " << ny << ", " << nz
-              << "], d=" << d << std::endl;
+              << "], d=" << d << ", inlier_ratio=" << inlier_ratio << std::endl;
     prev_plane_found_ = true;
   }
 
-  // Step 6: Remove points below the plane (floor removal)
-  // In robot frame Z=up, so points below plane have negative signed distance
-  removePointsBelowPlane(cloud_filtered, nx, ny, nz, d, result.floor_cloud, result.no_floor_cloud);
+  // Step 6: Remove points on the plane (floor removal)
+  removePointsOnPlane(cloud_filtered, nx, ny, nz, d, result.floor_cloud, result.no_floor_cloud);
   result.floor_points = result.floor_cloud->points.size();
 
-  // Step 7: Classify voxelized cloud for visualization
-  removePointsBelowPlane(cloud_voxelized, nx, ny, nz, d,
-                         result.floor_cloud_voxelized, result.no_floor_cloud_voxelized);
+  // Step 7: Apply voxel grid to full cloud for visualization
+  auto cloud_voxelized = cloud_filtered;
+  if (params_.use_voxel_grid) {
+    cloud_voxelized = applyVoxelGrid(cloud_filtered);
+  }
 
-  // Step 8: Remove noise from voxelized no-floor cloud ONLY (skip full resolution for speed)
-  // Calculate approximate floor Z height (project origin to plane)
-  double floor_z = -d / nz;  // Simplified for horizontal-ish floor
-  result.no_floor_cloud_voxelized = removeFloorNoise(result.no_floor_cloud_voxelized, floor_z);
+  // Step 8: Classify voxelized cloud for visualization
+  removePointsOnPlane(cloud_voxelized, nx, ny, nz, d,
+                      result.floor_cloud_voxelized, result.no_floor_cloud_voxelized);
 
-  // Step 10: Project no_floor_cloud_voxelized to 2D (floor removal plane)
-  // Calculate the plane used for floor removal (shifted by threshold)
-  double removal_d = d - (params_.floor_removal_thickness / 2.0 + params_.floor_margin);
-  result.no_floor_cloud_voxelized_2d_projected = projectTo2D(result.no_floor_cloud_voxelized, nx, ny, nz, removal_d);
+  // Step 9: Remove noise from voxelized no-floor cloud
+  result.no_floor_cloud_voxelized = removeFloorNoise(result.no_floor_cloud_voxelized, nx, ny, nz, d);
 
+  // Step 10: Project no_floor_cloud_voxelized to 2D (detected floor plane)
+  result.no_floor_cloud_voxelized_2d_projected = projectTo2D(result.no_floor_cloud_voxelized, nx, ny, nz, d);
 
   return result;
 }
 
-pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::transformToStandardFrame(
-  const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud_camera)
+pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::filterByDistance(
+  const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud)
 {
-  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_standard(new pcl::PointCloud<pcl::PointXYZ>);
-  cloud_standard->header = cloud_camera->header;
-  cloud_standard->points.reserve(cloud_camera->points.size());
+  // Filter points by distance from camera origin
+  // Camera optical frame: X=right, Y=down, Z=forward/depth
+  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZ>);
+  cloud_filtered->header = cloud->header;
+  cloud_filtered->points.reserve(cloud->points.size());
 
-  // Step 1: Always apply default optical->base transform first
-  // Camera optical: X=right, Y=down, Z=forward
-  // Robot base: X=forward, Y=left, Z=up
-  for (const auto& cam_point : cloud_camera->points) {
-    if (!std::isfinite(cam_point.x) || !std::isfinite(cam_point.y) || !std::isfinite(cam_point.z)) {
+  double max_dist_sq = params_.max_detection_distance * params_.max_detection_distance;
+
+  for (const auto& point : cloud->points) {
+    if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) {
       continue;
     }
 
-    pcl::PointXYZ base_point;
-    base_point.x = cam_point.z;   // forward = depth
-    base_point.y = -cam_point.x;  // left = -right
-    base_point.z = -cam_point.y;  // up = -down
+    double dist_sq = point.x * point.x + point.y * point.y + point.z * point.z;
 
-    // Step 2: Apply additional extrinsic transform if enabled
-    if (!params_.use_default_transform) {
-      // Build rotation matrix from Euler angles (ZYX order: Yaw * Pitch * Roll)
-      double cr = std::cos(params_.cam_roll);
-      double sr = std::sin(params_.cam_roll);
-      double cp = std::cos(params_.cam_pitch);
-      double sp = std::sin(params_.cam_pitch);
-      double cy = std::cos(params_.cam_yaw);
-      double sy = std::sin(params_.cam_yaw);
-
-      // Rotation matrix (ZYX Euler)
-      double r11 = cy * cp;
-      double r12 = cy * sp * sr - sy * cr;
-      double r13 = cy * sp * cr + sy * sr;
-      double r21 = sy * cp;
-      double r22 = sy * sp * sr + cy * cr;
-      double r23 = sy * sp * cr - cy * sr;
-      double r31 = -sp;
-      double r32 = cp * sr;
-      double r33 = cp * cr;
-
-      // Apply rotation to base_point
-      double x_rot = r11 * base_point.x + r12 * base_point.y + r13 * base_point.z;
-      double y_rot = r21 * base_point.x + r22 * base_point.y + r23 * base_point.z;
-      double z_rot = r31 * base_point.x + r32 * base_point.y + r33 * base_point.z;
-
-      // Apply translation
-      base_point.x = x_rot + params_.cam_tx;
-      base_point.y = y_rot + params_.cam_ty;
-      base_point.z = z_rot + params_.cam_tz;
+    if (dist_sq <= max_dist_sq) {
+      cloud_filtered->points.push_back(point);
     }
-
-    cloud_standard->points.push_back(base_point);
   }
 
-  cloud_standard->width = cloud_standard->points.size();
-  cloud_standard->height = 1;
-  cloud_standard->is_dense = false;
+  cloud_filtered->width = cloud_filtered->points.size();
+  cloud_filtered->height = 1;
+  cloud_filtered->is_dense = false;
 
-  return cloud_standard;
+  return cloud_filtered;
+}
+
+pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::extractFloorDetectionRegion(
+  const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud)
+{
+  // Extract floor detection region based on depth (Z axis in camera frame)
+  // Camera optical frame: Z=forward/depth
+  // ToF cameras typically capture floor in near depth range
+  pcl::PointCloud<pcl::PointXYZ>::Ptr floor_region(new pcl::PointCloud<pcl::PointXYZ>);
+  floor_region->header = cloud->header;
+  floor_region->points.reserve(cloud->points.size());
+
+  for (const auto& point : cloud->points) {
+    // Filter by depth range
+    if (point.z >= params_.floor_detection_min_depth &&
+        point.z <= params_.floor_detection_max_depth) {
+      floor_region->points.push_back(point);
+    }
+  }
+
+  floor_region->width = floor_region->points.size();
+  floor_region->height = 1;
+  floor_region->is_dense = false;
+
+  return floor_region;
 }
 
 pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::applyVoxelGrid(
@@ -229,116 +202,6 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::applyVoxelGrid(
   }
 
   return cloud_downsampled;
-}
-
-pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::filterByDistance(
-  const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud)
-{
-  // Filter points by distance from camera origin and maximum height
-  // In robot frame: X=forward (depth), Z=up (height)
-  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZ>);
-  cloud_filtered->header = cloud->header;
-  cloud_filtered->points.reserve(cloud->points.size());
-
-  double max_dist_sq = params_.max_detection_distance * params_.max_detection_distance;
-
-  for (const auto& point : cloud->points) {
-    double dist_sq = point.x * point.x + point.y * point.y + point.z * point.z;
-
-    // Filter by distance and height
-    if (dist_sq <= max_dist_sq && point.z <= params_.max_height) {
-      cloud_filtered->points.push_back(point);
-    }
-  }
-
-  cloud_filtered->width = cloud_filtered->points.size();
-  cloud_filtered->height = 1;
-  cloud_filtered->is_dense = false;
-
-  return cloud_filtered;
-}
-
-double PlaneRemover::findMinZ(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud)
-{
-  // Find minimum Z (robot frame: Z=up, so min Z = lowest point = floor)
-  double min_z = 1e6;
-  for (const auto& point : cloud->points) {
-    min_z = std::min(min_z, static_cast<double>(point.z));
-  }
-
-  return min_z;
-}
-
-double PlaneRemover::findMinZPercentile(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, double percentile)
-{
-  if (cloud->points.empty()) return 0.0;
-
-  std::vector<float> z_values;
-  z_values.reserve(cloud->points.size());
-  for (const auto& point : cloud->points) {
-    z_values.push_back(point.z);
-  }
-
-  std::sort(z_values.begin(), z_values.end());
-  size_t index = static_cast<size_t>(z_values.size() * percentile / 100.0);
-  index = std::min(index, z_values.size() - 1);
-
-  return static_cast<double>(z_values[index]);
-}
-
-double PlaneRemover::findMaxZPercentile(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, double percentile)
-{
-  if (cloud->points.empty()) return 0.0;
-
-  std::vector<float> z_values;
-  z_values.reserve(cloud->points.size());
-  for (const auto& point : cloud->points) {
-    z_values.push_back(point.z);
-  }
-
-  std::sort(z_values.begin(), z_values.end());
-  size_t index = static_cast<size_t>(z_values.size() * percentile / 100.0);
-  index = std::min(index, z_values.size() - 1);
-
-  return static_cast<double>(z_values[index]);
-}
-
-pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::filterByValidZ(
-  const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud)
-{
-  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZ>);
-  cloud_filtered->header = cloud->header;
-  cloud_filtered->points.reserve(cloud->points.size());
-
-  for (const auto& point : cloud->points) {
-    if (point.z >= params_.min_valid_z) {
-      cloud_filtered->points.push_back(point);
-    }
-  }
-
-  cloud_filtered->width = cloud_filtered->points.size();
-  cloud_filtered->height = 1;
-  cloud_filtered->is_dense = false;
-
-  return cloud_filtered;
-}
-
-pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::extractFloorRegion(
-  const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, double min_z, double max_z)
-{
-  // Robot frame: Z=up, so floor is between min_z and max_z
-  pcl::PointCloud<pcl::PointXYZ>::Ptr floor_region(new pcl::PointCloud<pcl::PointXYZ>);
-  for (const auto& point : cloud->points) {
-    if (point.z >= min_z && point.z <= max_z) {
-      floor_region->points.push_back(point);
-    }
-  }
-
-  floor_region->width = floor_region->points.size();
-  floor_region->height = 1;
-  floor_region->is_dense = false;
-
-  return floor_region;
 }
 
 bool PlaneRemover::detectFloorPlane(
@@ -379,39 +242,42 @@ bool PlaneRemover::detectFloorPlane(
   return true;
 }
 
-bool PlaneRemover::isPlaneValid(double nz)
+bool PlaneRemover::isPlaneValid(double ny)
 {
-  // Normal should point upward in robot frame (Z component should be positive and significant)
-  // Robot frame: Z=up, so floor normal should have positive Z (close to 1.0 for horizontal floor)
-  // Check if normal is pointing upward (positive Z) and is significant
-  if (nz < params_.floor_normal_z_threshold) {
+  // Normal should point upward in camera optical frame
+  // Camera frame: Y=down, so floor normal should have negative Y (pointing up)
+  // Check if abs(Y) component is significant (close to -1.0 for horizontal floor)
+  if (std::abs(ny) < params_.floor_normal_y_threshold) {
+    return false;
+  }
+
+  // Ensure normal points upward (negative Y in camera frame)
+  if (ny > 0) {
     return false;
   }
 
   return true;
 }
 
-void PlaneRemover::removePointsBelowPlane(
+void PlaneRemover::removePointsOnPlane(
   const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
   double nx, double ny, double nz, double d,
   pcl::PointCloud<pcl::PointXYZ>::Ptr& floor_cloud,
   pcl::PointCloud<pcl::PointXYZ>::Ptr& no_floor_cloud)
 {
-  // Remove points below the plane (floor removal)
-  // In robot frame (Z=up), floor normal points upward (nz > 0)
+  // Remove points on or near the detected plane (floor removal)
+  // Camera optical frame - plane equation: nx*x + ny*y + nz*z + d = 0
   // Signed distance = nx*x + ny*y + nz*z + d
-  // Negative distance = below plane, Positive distance = above plane
+  // Points with abs(distance) < threshold are considered floor
 
-  // Use REMOVAL thickness to define floor region
-  double threshold = params_.floor_removal_thickness / 2.0 + params_.floor_margin;
+  double threshold = params_.floor_removal_distance_threshold + params_.floor_margin;
 
   for (const auto& point : cloud->points) {
     // Calculate signed distance from point to plane
     double signed_distance = nx * point.x + ny * point.y + nz * point.z + d;
 
-    // Points AT or BELOW the plane are considered floor
-    // Since normal points up, negative distance means below plane
-    if (signed_distance <= threshold) {
+    // Points close to the plane (within threshold) are considered floor
+    if (std::abs(signed_distance) <= threshold) {
       floor_cloud->points.push_back(point);
     } else {
       no_floor_cloud->points.push_back(point);
@@ -469,7 +335,7 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::projectTo2D(
 
 pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::removeFloorNoise(
   const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
-  double floor_z)
+  double nx, double ny, double nz, double d)
 {
   if (!params_.enable_noise_removal || cloud->points.empty()) {
     return cloud;
@@ -478,7 +344,7 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::removeFloorNoise(
   // Fast voxel-based noise removal (much faster than KD-tree)
   // Use a simple 3D grid hash map to count neighbors
   const double voxel_size = params_.noise_radius_search;
-  const double floor_margin = params_.noise_floor_height_margin;
+  const double plane_margin = params_.noise_plane_distance_margin;
 
   // Create voxel grid hash map
   std::unordered_map<size_t, int> voxel_count;
@@ -490,9 +356,10 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::removeFloorNoise(
     return ((size_t)ix * 73856093) ^ ((size_t)iy * 19349663) ^ ((size_t)iz * 83492791);
   };
 
-  // First pass: count points in each voxel (only for floor region)
+  // First pass: count points in each voxel (only for points near plane)
   for (const auto& point : cloud->points) {
-    if (point.z < floor_z + floor_margin) {
+    double dist_to_plane = std::abs(nx * point.x + ny * point.y + nz * point.z + d);
+    if (dist_to_plane < plane_margin) {
       size_t hash = voxel_hash(point.x, point.y, point.z);
       voxel_count[hash]++;
     }
@@ -510,8 +377,9 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::removeFloorNoise(
   };
 
   for (const auto& point : cloud->points) {
-    // Only filter points near floor
-    if (point.z >= floor_z + floor_margin) {
+    // Only filter points near detected plane
+    double dist_to_plane = std::abs(nx * point.x + ny * point.y + nz * point.z + d);
+    if (dist_to_plane >= plane_margin) {
       cloud_filtered->points.push_back(point);
       continue;
     }
@@ -554,10 +422,10 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::removeFloorNoise(
   cloud_filtered->height = 1;
   cloud_filtered->is_dense = false;
 
-  // Only log if significant noise was removed (> 10% of near-floor points)
-  size_t near_floor_points = cloud->points.size() - cloud_filtered->points.size() + noise_removed;
-  if (noise_removed > 0 && near_floor_points > 0) {
-    double noise_ratio = 100.0 * noise_removed / near_floor_points;
+  // Only log if significant noise was removed (> 10% of near-plane points)
+  size_t near_plane_points = cloud->points.size() - cloud_filtered->points.size() + noise_removed;
+  if (noise_removed > 0 && near_plane_points > 0) {
+    double noise_ratio = 100.0 * noise_removed / near_plane_points;
     if (noise_ratio > 10.0) {
       std::cout << "[INFO] Removed " << noise_removed << " isolated floor noise points ("
                 << std::fixed << std::setprecision(1) << noise_ratio << "%)" << std::endl;
