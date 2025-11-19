@@ -1,50 +1,18 @@
 # Floor Removal RGBD
 
-A ROS2 package for detecting and removing floor planes from RGBD point clouds using RANSAC plane segmentation. Includes vertical wall detection and pallet candidate filtering for warehouse automation.
+A ROS2 package for robust floor plane detection and removal from RGBD/ToF point clouds using RANSAC-based plane segmentation with automatic floor detection.
 
 ## Overview
 
-This package processes point clouds from RGBD cameras (e.g., Intel RealSense D435i) to:
-1. Detect and separate floor planes from the scene
-2. Detect vertical walls (YZ planes) perpendicular to the forward direction
-3. Filter pallet candidates based on proximity to detected walls
-4. Detect pallet stringers (wooden support beams) in the remaining cloud
+This package processes point clouds from depth cameras (e.g., ToF cameras, Intel RealSense) to detect and remove floor planes from the scene. Designed for warehouse automation and mobile robot applications, particularly for FMR (Forklift Mobile Robot) systems that need to detect pallets and objects while filtering out the floor.
 
-The algorithm uses a multi-stage approach:
-1. **Floor Detection**: Identifies the floor plane using RANSAC with dual-thickness strategy
-2. **Floor Removal**: Removes only a thin layer around the detected plane to preserve objects on the floor
-3. **Wall Detection**: Detects vertical planes (walls) using cluster-based RANSAC
-4. **Pallet Candidate Filtering**: Extracts points within configurable distance from detected walls
-
-This design allows the algorithm to:
-- Robustly detect floor planes with sufficient sample points
-- Preserve low-height objects on the floor (e.g., 10cm pallets)
-- Detect vertical walls at any angle and orientation
-- Filter potential pallet locations based on wall proximity
-- Detect pallet stringers for automated forklift navigation
-- Work in robot coordinate frame for intuitive parameter tuning
-
-## Features
-
-### Core Features
-- **Robot Coordinate Frame Processing**: Processes in robot base frame (X=forward, Y=left, Z=up) for intuitive height-based filtering
-- **Fixed Floor Height Mode**: Uses fixed floor height for consistent floor removal
-- **Camera Extrinsic Support**: Configurable camera position and orientation
-- **Dual-Thickness Strategy**: Separate parameters for detection and removal
-- **Voxel Grid Downsampling**: Reduces computational cost and filters noise
-- **Multiple Output Topics**: Publishes both original and voxelized point clouds
-
-### Wall Detection Features (NEW)
-- **YZ Plane Detection**: Detects vertical walls perpendicular to X-axis (forward direction)
-- **Cluster-based Segmentation**: Separates objects before plane fitting for robust multi-wall detection
-- **Accurate Plane Orientation**: Uses proper coordinate system to avoid projection artifacts
-- **Stable Visualization**: Pitch-stabilized plane markers that don't flicker
-- **Configurable Thickness**: Adjustable plane thickness visualization (unidirectional or bidirectional)
-- **Pallet Candidate Filtering**: Publishes points within plane thickness for downstream processing
-
-### Stringer Detection Features
-- **Pallet Stringer Detection**: Detects wooden support beams using clustering and dimensional analysis
-- **Visualization Support**: Publishes bounding box markers for detected stringers
+**Key Features:**
+- **Automatic Floor Detection**: Uses percentile-based floor height estimation to handle robot pitch/roll
+- **Fixed Mode Support**: Option to use fixed floor height for consistent results
+- **ToF Shadow Filtering**: Removes physically impossible points (z < 0) caused by ToF sensor artifacts
+- **Noise Removal**: Intelligent post-processing to remove isolated floor remnants
+- **Real-time Performance**: Optimized O(N) algorithms for fast processing
+- **Warehouse-Ready**: Handles uneven floors, robot tilt, and challenging industrial environments
 
 ## Architecture
 
@@ -54,12 +22,10 @@ This design allows the algorithm to:
 floor_removal_rgbd/
 ├── include/floor_removal_rgbd/
 │   ├── plane_remover.hpp       # Core floor removal algorithm
-│   ├── stringer_detector.hpp   # Pallet stringer detection
 │   └── server_node.hpp         # ROS2 node interface
 ├── src/
 │   ├── plane_remover.cpp       # Floor removal implementation
-│   ├── stringer_detector.cpp   # Stringer detection implementation
-│   └── server_node.cpp         # ROS2 node + YZ plane detection + main()
+│   └── server_node.cpp         # ROS2 node + main()
 ├── launch/
 │   └── floor_removal.launch.py
 ├── config/
@@ -77,35 +43,26 @@ Core algorithm class that handles floor plane detection and removal.
 **Key Methods:**
 - `process()`: Main processing pipeline
 - `transformToStandardFrame()`: Converts camera optical frame to robot base frame
-- `applyVoxelGrid()`: Downsamples point cloud
-- `extractFloorRegionRobotFrame()`: Extracts candidate floor points
+- `applyVoxelGrid()`: Downsamples point cloud for performance
+- `filterByValidZ()`: Removes ToF shadow artifacts (z < min_valid_z)
+- `findMinZPercentile()`: Auto mode - finds floor using percentiles
+- `extractFloorRegion()`: Extracts candidate floor points
 - `detectFloorPlane()`: Runs RANSAC to detect floor plane
-- `isPlaneValid()`: Validates detected plane
-- `classifyPoints()`: Separates floor and non-floor points
+- `isPlaneValid()`: Validates detected plane normal
+- `removePointsBelowPlane()`: Separates floor and non-floor points
+- `removeFloorNoise()`: Post-processing to remove isolated floor remnants
 
 #### `FloorRemovalServerNode`
-ROS2 node that provides the subscription/publishing interface and implements YZ plane detection.
+ROS2 node that provides the subscription/publishing interface.
 
 **Responsibilities:**
 - Load parameters from ROS2 parameter server
 - Subscribe to point cloud topics
 - Call PlaneRemover for floor processing
-- Perform cluster-based YZ plane detection
-- Filter pallet candidates based on wall proximity
 - Publish separated floor and non-floor clouds
-- Publish wall visualization markers and pallet candidates
-- Publish stringer detection results (markers and centers)
+- Handle state change logging (plane found/lost)
 
-#### `StringerDetector`
-Detects pallet stringers using Euclidean clustering and dimensional analysis.
-
-**Key Methods:**
-- `detect()`: Main detection pipeline
-- `clusterPointCloud()`: Performs Euclidean clustering
-- `computeBoundingBox()`: Computes bounding box for each cluster
-- `matchesStringerCriteria()`: Validates cluster dimensions
-
-## Algorithm
+## Mathematical Algorithm
 
 ### Coordinate System
 
@@ -121,215 +78,412 @@ The algorithm works in **robot base frame** after transforming from camera optic
 - **Y axis**: Left (+)
 - **Z axis**: Up (+)
 
+**Transform:**
+```
+x_robot = z_camera
+y_robot = -x_camera
+z_robot = -y_camera
+```
+
 Since Z points upward, the floor has the **minimum Z value** (lowest points).
 
 ### Processing Pipeline
 
-1. **Coordinate Transformation**
-   - Transforms camera optical frame to robot base frame
-   - Optional: Apply custom extrinsic parameters (camera position/orientation)
+#### 1. Coordinate Transformation
 
-2. **Voxel Grid Downsampling** (optional)
-   - Reduces ~100k points to ~10k points
-   - Filters noise and improves performance
-   - Configurable leaf size (default: 2cm)
+Given a point `p_cam = (x_c, y_c, z_c)` in camera optical frame, transform to robot base frame:
 
-3. **Floor Detection and Removal**
-   - Uses configured `floor_height` value in robot frame (Z coordinate)
-   - Extracts floor region with `floor_detection_thickness` (wider for RANSAC)
-   - Runs RANSAC plane fitting with normal validation
-   - Removes thin layer with `floor_removal_thickness` (preserves objects)
-
-4. **YZ Plane Detection** (Vertical Walls)
-   - Euclidean clustering to separate objects (10cm tolerance, 50-25000 points)
-   - For each cluster:
-     - RANSAC with perpendicular plane model (axis constraint on X-axis)
-     - Normal validation (|nx| > threshold, typically 0.3-0.7)
-     - Extract plane inliers and compute bounds
-   - Plane coordinate system creation:
-     - Forces Y-axis to be horizontal (stable orientation)
-     - Z-axis aligned with plane normal
-     - Prevents pitch flickering by using consistent reference
-   - Visualization marker generation:
-     - Position: centroid of detected plane
-     - Orientation: quaternion from plane coordinate system
-     - Size: actual extent of points projected onto plane axes
-     - Thickness: configurable offset in normal direction
-
-5. **Pallet Candidate Filtering**
-   - For each detected wall plane:
-     - Calculate signed distance from each point to plane
-     - Apply thickness filter (bidirectional or unidirectional mode)
-     - Apply spatial extent filter (within plane XY bounds + margin)
-   - Accumulate candidates from all detected planes
-   - Publish combined point cloud
-
-6. **Stringer Detection** (optional)
-   - Clusters remaining points using Euclidean clustering
-   - Analyzes cluster dimensions (width, height, depth)
-   - Identifies clusters matching stringer criteria
-
-### Dual-Thickness Strategy (Floor)
-
-**Problem**: Using the same thickness for detection and removal creates a trade-off:
-- Too thick → includes objects on floor (e.g., pallets) → inaccurate plane
-- Too thin → insufficient points for RANSAC → unstable detection
-
-**Solution**: Separate parameters
-- **Detection thickness** (15cm): Wide region for robust RANSAC
-- **Removal thickness** (3cm): Thin layer for precise floor removal
-
-**Example**:
 ```
-Floor plane at Z = 0.0m (robot frame)
-
-Detection phase:
-  Select points: Z ∈ [0.0, 0.15] (15cm range)
-  → Enough points for RANSAC
-  → Plane equation: nz*z + ... = 0
-
-Removal phase:
-  Remove points: distance to plane ∈ [-0.015, +0.015] (3cm range)
-  → Only removes thin floor surface
-  → 10cm pallet preserved ✓
+p_base = (x_b, y_b, z_b) where:
+  x_b = z_c    (forward = depth)
+  y_b = -x_c   (left = -right)
+  z_b = -y_c   (up = -down)
 ```
 
-### YZ Plane Detection Algorithm
+If custom extrinsics are enabled (`use_default_transform: false`), apply additional rotation and translation:
 
-**Goal**: Detect vertical walls at any orientation, not just axis-aligned.
-
-**Key Innovation**: Plane-fitted coordinate system instead of axis projection.
-
-**Problem with Naive Approach**:
 ```
-❌ Old approach: Project all points to YZ plane (X=0)
-   - Rotated walls appear as if projected onto X=0
-   - Loses actual wall orientation and position
-   - Cannot distinguish between rotated wall and straight wall
+R = R_z(yaw) * R_y(pitch) * R_x(roll)
+p_final = R * p_base + t
+
+where t = (cam_tx, cam_ty, cam_tz)
 ```
 
-**Solution - Proper 3D Plane Fitting**:
+#### 2. Voxel Grid Downsampling
+
+Reduces point cloud density while preserving geometric structure:
+
 ```
-✓ New approach:
-  1. Cluster points to separate objects (each cluster may be a wall)
-  2. For each cluster, fit plane with RANSAC
-     - Use SACMODEL_PERPENDICULAR_PLANE with X-axis constraint
-     - Allows walls at any angle, not just X=0
-  3. Extract plane normal (nx, ny, nz) and centroid
-  4. Create plane-local coordinate system:
-     - Z-axis = normal direction (perpendicular to wall)
-     - Y-axis = horizontal (forced to XY plane for stability)
-     - X-axis = Y × Z (completes right-handed system)
-  5. Project points onto plane-local axes to get actual extent
-  6. Visualize with proper orientation (not axis-aligned)
+For each point p = (x, y, z):
+  voxel_index = (⌊x/L⌋, ⌊y/L⌋, ⌊z/L⌋)
+
+  Group all points in same voxel
+  Replace group with centroid
+
+where L = voxel_leaf_size (default: 0.02m)
 ```
 
-**Thickness Modes**:
+**Effect**: Reduces ~300k points to ~5-10k points while filtering noise.
 
-1. **Bidirectional Mode** (`yz_plane_marker_bidirectional: true`)
-   ```
-   Detected plane position (fixed)
-         │
-    ←───┼───→  Extends equally in both normal directions
-   -t/2 │ +t/2
-   ```
-   - Marker center stays at detected plane centroid
-   - Extends ±(thickness/2) from plane
-   - Sign of thickness parameter ignored
-   - Use case: Symmetric search around detected wall
+#### 3. ToF Shadow Filtering
 
-2. **Unidirectional Mode** (`yz_plane_marker_bidirectional: false`)
-   ```
-   Positive thickness:              Negative thickness:
-   Plane ───→                       ←─── Plane
-   │    +t                          -t   │
-   │                                     │
-   Extends in +normal direction     Extends in -normal direction
-   ```
-   - Marker center shifts by thickness/2
-   - One face of marker stays at detected plane
-   - Sign controls direction
-   - Use case: Search only on one side of wall (e.g., pallets against wall)
+ToF cameras can produce erroneous points below the physical floor (z < 0):
 
-**Pallet Candidate Filtering**:
 ```
-For each point in no_floor_cloud_voxelized:
-  1. Calculate signed distance to plane: d = nx*x + ny*y + nz*z + d0
-  2. Check thickness bounds:
-     - Bidirectional: |d| <= thickness/2 + 0.01
-     - Unidirectional (+): -0.01 <= d <= thickness + 0.01
-     - Unidirectional (-): thickness - 0.01 <= d <= 0.01
-  3. Check spatial extent (within plane XY bounds + 10cm margin)
-  4. If both pass, add to pallet_candidates
+For each point p = (x, y, z):
+  if z < min_valid_z:
+    discard point
 ```
+
+**Default**: `min_valid_z = 0.0` (robot base is at ground level)
+
+#### 4. Automatic Floor Detection (Auto Mode)
+
+**Problem**: Fixed floor height doesn't work when robot has pitch/roll or floor is uneven.
+
+**Solution**: Use percentile-based floor estimation.
+
+Given point cloud P = {p₁, p₂, ..., pₙ} with z-coordinates Z = {z₁, z₂, ..., zₙ}:
+
+```
+Step 1: Sort Z in ascending order
+  Z_sorted = sort(Z)
+
+Step 2: Find minimum floor height (lowest p%)
+  min_z = Z_sorted[⌊n × p_min / 100⌋]
+
+  where p_min = auto_floor_percentile (default: 1.0%)
+
+Step 3: Find maximum floor height (lowest q%)
+  max_z = Z_sorted[⌊n × p_max / 100⌋]
+
+  where p_max = auto_floor_max_percentile (default: 10.0%)
+
+Step 4: Clamp to valid range
+  min_z = clamp(min_z, min_valid_z, max_floor_z)
+  max_z = clamp(max_z, min_z + floor_detection_thickness, max_floor_z + 0.15)
+```
+
+**Why percentiles?**
+- **Robust to outliers**: Ignores ToF shadows and high objects
+- **Adaptive to tilt**: Automatically adjusts to robot pitch/roll
+- **Handles uneven floors**: Uses statistical distribution instead of absolute values
+
+**Example:**
+```
+Robot tilted 5° forward → floor appears at different z-heights
+Without percentiles: Fixed z=0.0 fails
+With percentiles: Uses lowest 1% of points → robust ✓
+```
+
+#### 5. Floor Region Extraction
+
+Extract points likely to be part of the floor plane:
+
+```
+For each point p = (x, y, z):
+  if min_z ≤ z ≤ max_z:
+    add p to floor_region
+```
+
+This creates a **thick slice** containing the floor and nearby objects.
+
+#### 6. RANSAC Plane Detection
+
+**Goal**: Find the best-fit plane through floor_region points.
+
+**Plane Equation**:
+```
+n · p + d = 0
+
+where:
+  n = (nx, ny, nz) is the unit normal vector
+  d is the signed distance from origin
+  p = (x, y, z) is any point on the plane
+```
+
+Expanded form:
+```
+nx·x + ny·y + nz·z + d = 0
+```
+
+**RANSAC Algorithm**:
+```
+best_inliers = 0
+best_plane = null
+
+for i = 1 to ransac_max_iterations:
+  Step 1: Randomly sample 3 points from floor_region
+    p1, p2, p3 ~ uniform(floor_region)
+
+  Step 2: Compute plane from 3 points
+    v1 = p2 - p1
+    v2 = p3 - p1
+    n = normalize(v1 × v2)  // cross product
+    d = -n · p1
+
+  Step 3: Count inliers (points close to plane)
+    inliers = 0
+    for each point p in floor_region:
+      distance = |n · p + d| / ||n||
+      if distance < ransac_distance_threshold:
+        inliers++
+
+  Step 4: Keep best plane
+    if inliers > best_inliers:
+      best_inliers = inliers
+      best_plane = (n, d)
+
+return best_plane
+```
+
+**Distance Calculation**:
+```
+For a point p = (x, y, z) and plane (n, d):
+
+  signed_distance = nx·x + ny·y + nz·z + d
+
+  unsigned_distance = |signed_distance|
+```
+
+**Inlier Threshold**:
+- `ransac_distance_threshold = 0.03m` means points within ±3cm are considered part of the plane.
+
+#### 7. Plane Validation
+
+Check if detected plane is actually a horizontal floor:
+
+```
+In robot frame (Z = up):
+  A horizontal floor has n ≈ (0, 0, ±1)
+
+Validation:
+  if |nz| < floor_normal_z_threshold:
+    reject plane (not horizontal enough)
+```
+
+**Default**: `floor_normal_z_threshold = 0.7`
+- `nz = 1.0`: Perfectly horizontal
+- `nz = 0.7`: ~45° tilt (acceptable for uneven floors)
+- `nz = 0.0`: Vertical (reject)
+
+#### 8. Floor Point Separation
+
+Classify each point as floor or non-floor based on signed distance to plane:
+
+```
+For each point p = (x, y, z) in original cloud:
+
+  Step 1: Calculate signed distance to plane
+    d_signed = nx·x + ny·y + nz·z + d₀
+
+  Step 2: Calculate removal threshold
+    In robot frame (Z=up, floor below), points BELOW plane are floor:
+
+    threshold_lower = -(floor_removal_thickness/2 + floor_margin)
+    threshold_upper = +(floor_removal_thickness/2 + floor_margin)
+
+  Step 3: Classify point
+    if threshold_lower ≤ d_signed ≤ threshold_upper:
+      add p to floor_cloud
+    else:
+      add p to no_floor_cloud
+```
+
+**Why signed distance?**
+```
+d_signed > 0: Point is ABOVE the plane (toward +normal direction)
+d_signed < 0: Point is BELOW the plane (toward -normal direction)
+d_signed = 0: Point is ON the plane
+```
+
+**Example** (floor at z=0, normal n=(0,0,1), d=0):
+```
+Point p = (1, 2, 0.01):
+  d_signed = 0·1 + 0·2 + 1·0.01 + 0 = 0.01 (above floor)
+
+Point p = (1, 2, -0.02):
+  d_signed = 0·1 + 0·2 + 1·(-0.02) + 0 = -0.02 (below floor)
+
+With floor_removal_thickness = 0.05, floor_margin = 0.01:
+  threshold_lower = -(0.05/2 + 0.01) = -0.035
+  threshold_upper = +(0.05/2 + 0.01) = +0.035
+
+  p = (1, 2, 0.01): -0.035 ≤ 0.01 ≤ 0.035 → FLOOR ✓
+  p = (1, 2, -0.02): -0.035 ≤ -0.02 ≤ 0.035 → FLOOR ✓
+  p = (1, 2, 0.10): 0.10 > 0.035 → NOT FLOOR ✓
+```
+
+#### 9. Noise Removal Post-Processing
+
+After floor removal, small isolated floor remnants may remain due to noise.
+
+**Algorithm**: 3x3x3 voxel neighborhood filtering
+
+```
+Given voxel size v_size = noise_radius_search (default: 0.05m)
+
+Step 1: Build voxel occupancy map
+  For each point p = (x, y, z) near floor (z < floor_z + margin):
+    voxel_idx = (⌊x/v_size⌋, ⌊y/v_size⌋, ⌊z/v_size⌋)
+    voxel_count[hash(voxel_idx)]++
+
+Step 2: Filter based on neighborhood density
+  For each point p near floor:
+    voxel_idx = (ix, iy, iz) for point p
+
+    // Count points in 3x3x3 neighborhood (27 voxels)
+    neighbor_count = 0
+    occupied_voxels = 0
+
+    for dx = -1 to +1:
+      for dy = -1 to +1:
+        for dz = -1 to +1:
+          neighbor_idx = (ix+dx, iy+dy, iz+dz)
+          if voxel_count[hash(neighbor_idx)] > 0:
+            neighbor_count += voxel_count[hash(neighbor_idx)]
+            occupied_voxels++
+
+    // Dual criteria filtering
+    if (neighbor_count ≥ noise_min_neighbors) AND (occupied_voxels ≥ 3):
+      KEEP point
+    else:
+      REMOVE point (isolated noise)
+```
+
+**Why dual criteria?**
+1. **neighbor_count ≥ 5**: Requires sufficient density
+2. **occupied_voxels ≥ 3**: Requires spatial distribution
+
+**Example cases**:
+```
+Case 1: Single isolated point
+  neighbor_count = 1 (only itself)
+  occupied_voxels = 1
+  → REMOVE ✓
+
+Case 2: Cluster of 5 points in same voxel
+  neighbor_count = 5
+  occupied_voxels = 1 (all in one voxel)
+  → REMOVE ✓ (still isolated)
+
+Case 3: Valid sparse region
+  neighbor_count = 6
+  occupied_voxels = 3
+  → KEEP ✓
+
+Case 4: Dense valid region
+  neighbor_count = 20
+  occupied_voxels = 8
+  → KEEP ✓
+```
+
+**Computational Complexity**: O(N)
+- Hash map lookups: O(1)
+- Each point checks 27 voxels: O(27) = O(1)
+- Total: O(N) where N = number of points
+
+This is much faster than KD-tree radius search which is O(N log N).
+
+### Performance Optimization
+
+#### Voxel Grid Downsampling
+- Input: ~300k points
+- Output: ~5-10k points
+- Speedup: ~30-60x reduction
+- Quality: Negligible loss for plane detection
+
+#### Two-Pass Processing
+1. **Voxelized cloud**: Fast processing for plane detection
+2. **Original cloud**: High-resolution floor separation
+
+This gives both speed and accuracy.
 
 ## Parameters
 
-### Input/Output Topics
+All parameters are configured in `config/params.yaml`.
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `input_cloud_topic` | `/camera/depth/color/points` | Input point cloud topic (camera optical frame) |
-| `output_floor_cloud_topic` | `/floor_cloud` | Output topic for floor points (robot frame, original resolution) |
-| `output_no_floor_cloud_topic` | `/no_floor_cloud` | Output topic for non-floor points (robot frame, original resolution) |
-| `output_floor_cloud_voxelized_topic` | `/floor_cloud_voxelized` | Output topic for floor points (voxelized) |
-| `output_no_floor_cloud_voxelized_topic` | `/no_floor_cloud_voxelized` | Output topic for non-floor points (voxelized) |
+### Common Parameters
 
-### Floor Detection Parameters
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `ransac_distance_threshold` | double | 0.03 | Distance threshold for RANSAC inliers (meters)<br>Increased from 0.02 to handle uneven warehouse floors |
+| `ransac_max_iterations` | int | 150 | Maximum RANSAC iterations<br>Increased from 100 for more robust detection |
+| `floor_detection_thickness` | double | 0.01 | Thickness of floor region for RANSAC (meters) |
+| `floor_removal_thickness` | double | 0.01 | Thickness of floor to remove (meters) |
+| `use_voxel_grid` | bool | true | Enable voxel grid downsampling |
+| `voxel_leaf_size` | double | 0.02 | Voxel size for downsampling (meters) |
+| `floor_normal_z_threshold` | double | 0.7 | Minimum \|nz\| for valid floor plane<br>Range: [0, 1] where 1 = perfectly horizontal |
+| `floor_margin` | double | 0.02 | Additional margin for floor removal (meters) |
+| `max_detection_distance` | double | 5.0 | Maximum depth for processing (meters) |
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `floor_height` | `0.0` | Floor Z coordinate in robot frame (meters) |
-| `ransac_distance_threshold` | `0.02` | Distance threshold for RANSAC inliers (meters) |
-| `ransac_max_iterations` | `100` | Maximum iterations for RANSAC |
-| `floor_normal_z_threshold` | `0.7` | Minimum Z component of normal (robot frame: Z=up)<br>For horizontal floor, nz should be close to 1.0 |
-| `floor_detection_thickness` | `0.15` | Thickness for RANSAC plane detection (meters)<br>Wider region to get sufficient points |
-| `floor_removal_thickness` | `0.03` | Thickness for actual floor removal (meters)<br>Thin layer to preserve objects |
-| `floor_margin` | `0.02` | Additional margin around detected plane (meters) |
+### Auto Mode Parameters
 
-### YZ Plane Detection Parameters (NEW)
+Only used when `use_auto_floor_detection: true`
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `enable_yz_plane_detection` | `true` | Enable vertical wall (YZ plane) detection |
-| `yz_plane_distance_threshold` | `0.03` | RANSAC distance threshold for wall detection (meters)<br>Points within this distance are considered inliers |
-| `yz_plane_max_iterations` | `200` | Maximum RANSAC iterations for wall detection |
-| `yz_plane_normal_x_threshold` | `0.3` | Minimum absolute X component of normal<br>Higher = more perpendicular to X-axis required<br>Range: 0.3 (lenient) to 0.9 (strict) |
-| `yz_plane_marker_thickness` | `0.0` | Visualization marker thickness extension (meters)<br>**Bidirectional mode**: Extends ±thickness/2 from plane<br>**Unidirectional mode**:<br>  - Positive: Extends in +normal direction<br>  - Negative: Extends in -normal direction<br>Does NOT affect plane detection, only visualization |
-| `yz_plane_marker_bidirectional` | `false` | Thickness extension mode<br>`false`: Unidirectional (sign matters)<br>`true`: Bidirectional (extends both ways, sign ignored) |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `use_auto_floor_detection` | bool | true | Enable automatic floor detection using percentiles |
+| `auto_floor_percentile` | double | 1.0 | Percentile for minimum floor height (0-100)<br>Uses lowest 1% of points |
+| `auto_floor_max_percentile` | double | 10.0 | Percentile for maximum floor height (0-100)<br>Uses lowest 10% of points |
+| `min_valid_z` | double | 0.0 | Minimum valid Z coordinate (meters)<br>Filters ToF shadow artifacts below this value |
+| `max_floor_z` | double | 0.12 | Maximum expected floor height (meters)<br>Safety clamp for auto detection |
 
-**YZ Plane Parameter Tuning**:
-- **Missing walls**: Decrease `yz_plane_normal_x_threshold` (e.g., 0.3)
-- **Too many false detections**: Increase `yz_plane_normal_x_threshold` (e.g., 0.7)
-- **Noisy wall planes**: Increase `yz_plane_distance_threshold` (e.g., 0.05)
-- **Want symmetric search**: Set `yz_plane_marker_bidirectional: true`
-- **Want one-sided search**: Set `yz_plane_marker_bidirectional: false` and adjust `yz_plane_marker_thickness` sign
+**Auto Mode Example**:
+```yaml
+use_auto_floor_detection: true
+auto_floor_percentile: 1.0      # Minimum floor from lowest 1%
+auto_floor_max_percentile: 10.0  # Maximum floor from lowest 10%
+min_valid_z: 0.0                 # Discard z < 0 (ToF shadows)
+max_floor_z: 0.12                # Floor can't be above 12cm
+```
 
-### Voxel Grid Parameters
+### Fixed Mode Parameters
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `use_voxel_grid` | `true` | Enable voxel grid downsampling |
-| `voxel_leaf_size` | `0.02` | Voxel size (meters)<br>2cm reduces ~100k points to ~10-15k points |
+Only used when `use_auto_floor_detection: false`
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `floor_height` | double | 0.0 | Fixed floor Z coordinate in robot frame (meters) |
+
+**Fixed Mode Example**:
+```yaml
+use_auto_floor_detection: false
+floor_height: 0.0  # Floor exactly at z=0
+```
+
+### Noise Removal Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `enable_noise_removal` | bool | true | Enable post-processing noise removal |
+| `noise_radius_search` | double | 0.05 | Voxel size for neighborhood search (meters) |
+| `noise_min_neighbors` | int | 5 | Minimum neighbors to keep point<br>Higher = more aggressive filtering |
+| `noise_floor_height_margin` | double | 0.15 | Only filter points within this height above floor (meters) |
+
+**Noise Removal Tuning**:
+- **Still seeing isolated points**: Increase `noise_min_neighbors` to 7-10
+- **Removing too much**: Decrease `noise_min_neighbors` to 3-4
+- **Performance issues**: Increase `noise_radius_search` to 0.08-0.10
 
 ### Camera Extrinsic Parameters
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `use_default_transform` | `true` | `true`: Use only default optical→base transform<br>`false`: Apply additional extrinsic on top |
-| `cam_tx` | `0.0` | Camera X offset in robot frame (meters, forward) |
-| `cam_ty` | `0.0` | Camera Y offset in robot frame (meters, left) |
-| `cam_tz` | `0.0` | Camera Z offset in robot frame (meters, up) |
-| `cam_roll` | `0.0` | Rotation around X axis (radians) |
-| `cam_pitch` | `0.0` | Rotation around Y axis (radians) |
-| `cam_yaw` | `0.0` | Rotation around Z axis (radians) |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `use_default_transform` | bool | false | true: Use only optical→base transform<br>false: Apply additional extrinsic parameters |
+| `cam_tx` | double | 0.0 | Camera X translation in robot frame (forward, meters) |
+| `cam_ty` | double | 0.0 | Camera Y translation in robot frame (left, meters) |
+| `cam_tz` | double | 0.35 | Camera Z translation in robot frame (up, meters) |
+| `cam_roll` | double | 0.0 | Rotation around X axis (radians) |
+| `cam_pitch` | double | 0.0 | Rotation around Y axis (radians) |
+| `cam_yaw` | double | 0.0 | Rotation around Z axis (radians) |
 
-**Example - Camera mounted 35cm above robot base**:
+**Common Setup** (camera mounted 35cm above robot base):
 ```yaml
 use_default_transform: false
 cam_tx: 0.0
 cam_ty: 0.0
-cam_tz: 0.35      # 35cm up
+cam_tz: 0.35  # 35cm above base
 ```
 
 ## Usage
@@ -352,22 +506,16 @@ source install/setup.bash
 # Launch with default parameters
 ros2 launch floor_removal_rgbd floor_removal.launch.py
 
-# Launch with custom parameters
+# Launch with custom config
 ros2 launch floor_removal_rgbd floor_removal.launch.py \
   config_file:=/path/to/custom_params.yaml
 ```
 
-### With RealSense Camera
+### With ToF Camera
 
 ```bash
-# Terminal 1: Launch RealSense camera
-ros2 launch realsense2_camera rs_launch.py \
-  enable_rgbd:=true \
-  enable_sync:=true \
-  align_depth.enable:=true \
-  enable_color:=true \
-  enable_depth:=true \
-  pointcloud.enable:=true
+# Terminal 1: Launch your camera node
+# (publishes to /camera/depth/color/points)
 
 # Terminal 2: Launch floor removal
 ros2 launch floor_removal_rgbd floor_removal.launch.py
@@ -376,196 +524,236 @@ ros2 launch floor_removal_rgbd floor_removal.launch.py
 ### Visualize in RViz
 
 ```bash
-# Open RViz
 rviz2
 
-# Add displays:
-# - PointCloud2: /camera/depth/color/points (original, camera optical frame)
-# - PointCloud2: /no_floor_cloud (scene without floor, robot base frame)
-# - PointCloud2: /floor_cloud (detected floor, robot base frame)
-# - MarkerArray: /yz_plane_markers (detected wall planes, blue boxes)
-# - PointCloud2: /pallet_candidates (points near walls)
-# - MarkerArray: /stringer_markers (detected stringer bounding boxes)
-# - PointCloud2: /stringer_centers (stringer center points)
+# Add these displays:
+# - PointCloud2: /camera/depth/color/points (original)
+# - PointCloud2: /no_floor_cloud (scene without floor)
+# - PointCloud2: /floor_cloud (detected floor)
+# - PointCloud2: /no_floor_cloud_voxelized (downsampled scene)
 
 # Set Fixed Frame to: camera_link or base_link
 ```
 
+## Published Topics
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `/floor_cloud` | sensor_msgs/PointCloud2 | Detected floor points (full resolution, robot frame) |
+| `/no_floor_cloud` | sensor_msgs/PointCloud2 | Scene with floor removed (full resolution, robot frame) |
+| `/floor_cloud_voxelized` | sensor_msgs/PointCloud2 | Floor points (downsampled) |
+| `/no_floor_cloud_voxelized` | sensor_msgs/PointCloud2 | Non-floor points (downsampled) |
+| `/no_floor_cloud_voxelized_2d_projected` | sensor_msgs/PointCloud2 | Non-floor points projected to 2D plane |
+
+**Note**: All output clouds are in robot base frame (X=forward, Y=left, Z=up).
+
+## Subscribed Topics
+
+| Topic | Type | Description |
+|-------|------|-------------|
+| `/camera/depth/color/points` | sensor_msgs/PointCloud2 | Input point cloud (camera optical frame) |
+
+## Logging Behavior
+
+The node uses state-change logging to minimize console spam:
+
+**Normal operation**: Silent (no logs)
+
+**State changes**:
+- `[INFO] Floor plane FOUND: normal=[nx, ny, nz], d=d` - Plane newly detected
+- `[WARNING] Floor plane LOST - floor region is empty` - Plane lost
+- `[WARNING] Floor plane LOST - RANSAC detection failed` - RANSAC failed
+- `[WARNING] Floor plane LOST - validation failed (nz=...)` - Normal too tilted
+- `[INFO] Removed N isolated floor noise points (X%)` - Significant noise removed (>10%)
+
+This reduces log spam while alerting you to important events.
+
 ## Examples
 
-### Example 1: Warehouse with Pallets Against Walls
+### Example 1: FMR Warehouse Application
 
-**Scenario**: Detect walls and find pallets placed against them
+**Scenario**: Mobile robot with ToF camera in warehouse with uneven floors
 
 **Configuration**:
 ```yaml
-# Floor detection
-floor_height: 0.0
-floor_detection_thickness: 0.15
-floor_removal_thickness: 0.03
+# Auto mode for handling robot tilt and uneven floors
+use_auto_floor_detection: true
+auto_floor_percentile: 1.0
+auto_floor_max_percentile: 10.0
+min_valid_z: 0.0
+max_floor_z: 0.12
+
+# Robust RANSAC for uneven surfaces
+ransac_distance_threshold: 0.03  # 3cm tolerance
+ransac_max_iterations: 150
 
 # Camera mounted 35cm above base
 use_default_transform: false
 cam_tz: 0.35
 
-# Wall detection with one-sided search
-enable_yz_plane_detection: true
-yz_plane_distance_threshold: 0.03
-yz_plane_normal_x_threshold: 0.5
-yz_plane_marker_thickness: -0.05     # 5cm toward camera
-yz_plane_marker_bidirectional: false # One-sided
+# Noise removal
+enable_noise_removal: true
+noise_min_neighbors: 5
 ```
 
-**Result**:
-- Floor removed ✓
-- Walls detected at any angle ✓
-- Pallet candidates within 5cm of walls ✓
+**Result**: Robust floor detection despite robot movement and floor variations ✓
 
-### Example 2: Multi-Wall Detection with Symmetric Search
+### Example 2: Fixed Indoor Environment
 
-**Scenario**: Detect multiple walls and search both sides
+**Scenario**: Stationary camera, perfectly flat floor
 
 **Configuration**:
 ```yaml
-# Wall detection with bidirectional search
-enable_yz_plane_detection: true
-yz_plane_distance_threshold: 0.03
-yz_plane_normal_x_threshold: 0.3     # Lenient threshold
-yz_plane_marker_thickness: 0.10      # 10cm total (±5cm)
-yz_plane_marker_bidirectional: true  # Both sides
+# Fixed mode for consistent performance
+use_auto_floor_detection: false
+floor_height: 0.0
+
+# Tighter tolerances
+ransac_distance_threshold: 0.02
+floor_removal_thickness: 0.01
+
+# Noise removal
+enable_noise_removal: true
+noise_min_neighbors: 5
 ```
 
-**Result**:
-- Multiple walls detected ✓
-- Search ±5cm from each wall ✓
-- Works with rotated walls ✓
+**Result**: Faster processing with consistent results ✓
 
-### Example 3: Performance Optimization
+### Example 3: Performance-Critical Application
 
-**Scenario**: 30Hz processing required
+**Scenario**: Need 30+ Hz processing
 
 **Configuration**:
 ```yaml
+# Aggressive downsampling
 use_voxel_grid: true
-voxel_leaf_size: 0.05            # Aggressive downsampling
-ransac_max_iterations: 50        # Fewer iterations
-yz_plane_max_iterations: 100     # Fewer wall RANSAC iterations
+voxel_leaf_size: 0.05  # 5cm voxels
+
+# Fewer RANSAC iterations
+ransac_max_iterations: 50
+
+# Disable noise removal if acceptable
+enable_noise_removal: false
 ```
 
-**Result**: Faster processing with acceptable accuracy ✓
-
-## Published Topics
-
-- `/floor_cloud` (sensor_msgs/PointCloud2): Detected floor points (robot frame)
-- `/no_floor_cloud` (sensor_msgs/PointCloud2): Scene with floor removed (robot frame)
-- `/floor_cloud_voxelized` (sensor_msgs/PointCloud2): Floor points (voxelized)
-- `/no_floor_cloud_voxelized` (sensor_msgs/PointCloud2): Non-floor points (voxelized)
-- `/yz_plane_markers` (visualization_msgs/MarkerArray): Detected wall plane markers (blue boxes)
-- `/pallet_candidates` (sensor_msgs/PointCloud2): Points within plane thickness (for pallet detection)
-- `/stringer_markers` (visualization_msgs/MarkerArray): Bounding boxes for detected stringers
-- `/stringer_centers` (sensor_msgs/PointCloud2): Center points of detected stringers
-
-## Subscribed Topics
-
-- `/camera/depth/color/points` (sensor_msgs/PointCloud2): Input point cloud (camera optical frame)
+**Result**: Higher framerate with acceptable accuracy ✓
 
 ## Troubleshooting
 
-### Issue: "No floor plane detected"
+### "Floor plane LOST" warnings
 
-**Possible Causes**:
-1. Floor region too thin → insufficient points for RANSAC
-2. Floor not visible in frame
-3. Incorrect `floor_height` value
+**Cause**: Floor not consistently detected
 
 **Solutions**:
-- Increase `floor_detection_thickness` to 0.2m or 0.3m
-- Check camera view (floor should be visible)
-- Verify `floor_height` matches your camera extrinsic setup
+1. Increase `floor_detection_thickness` to 0.02-0.03
+2. Increase `ransac_distance_threshold` to 0.04-0.05
+3. Check that floor is visible in camera view
+4. Verify camera extrinsics are correct
 
-### Issue: Walls not detected
+### Isolated floor points remaining
 
-**Possible Causes**:
-1. Wall normal not perpendicular enough to X-axis
-2. Clustering separated wall into multiple small clusters
-3. Insufficient inlier points
+**Cause**: Noise removal not aggressive enough
 
 **Solutions**:
-- Decrease `yz_plane_normal_x_threshold` to 0.3 (more lenient)
-- Increase `yz_plane_distance_threshold` to 0.05 (more tolerance)
-- Check cluster sizes in debug logs
+1. Increase `noise_min_neighbors` to 7-10
+2. Decrease `noise_radius_search` to 0.03-0.04
+3. Check that `enable_noise_removal: true`
 
-### Issue: Wall markers are flickering/rotating
+### Valid objects being removed
 
-**Cause**: This should not happen with the current implementation (stable Y-axis).
-
-**If it occurs**:
-- Check that the code uses horizontal Y-axis stabilization
-- Verify plane normal is being computed correctly
-- Check debug logs for normal values
-
-### Issue: Pallet candidates include too many points
-
-**Cause**: Thickness too large or spatial extent filter too loose
+**Cause**: Floor removal too thick or noise removal too aggressive
 
 **Solutions**:
-- Decrease `yz_plane_marker_thickness` (e.g., 0.02 instead of 0.05)
-- Code uses 10cm margin - can be adjusted in source if needed
+1. Decrease `floor_removal_thickness` to 0.005-0.01
+2. Decrease `noise_min_neighbors` to 3-4
+3. Ensure objects are at least 2-3cm above floor
 
-### Issue: Objects on floor are removed
+### ToF shadow artifacts
 
-**Cause**: Removal thickness too large
+**Cause**: Points with z < 0 due to sensor errors
+
+**Solution**:
+```yaml
+min_valid_z: 0.0  # Discard all points below z=0
+```
+
+### High CPU usage
+
+**Cause**: Processing too many points
 
 **Solutions**:
-- Decrease `floor_removal_thickness` to 0.02m or 0.01m
-- Ensure objects are at least 2x removal thickness height
+1. Increase `voxel_leaf_size` to 0.03-0.05
+2. Decrease `max_detection_distance` to 3.0-4.0
+3. Reduce `ransac_max_iterations` to 50-100
 
 ## Performance
 
-Typical performance on Intel Core i5:
-- Input: 120k points (camera optical frame)
-- After voxelization (2cm): 10-12k points
-- Floor detection + removal: 20-30ms
-- YZ plane detection (3-5 clusters): +15-25ms
-- Pallet candidate filtering: +5-10ms
-- Total: 40-65ms (~15-25Hz)
+Typical performance on Intel Core i5-8265U:
 
-## Dependencies
+| Input Size | Voxelized | Floor Detection | Noise Removal | Total | FPS |
+|------------|-----------|-----------------|---------------|-------|-----|
+| 307k points | 6k points | 8-12 ms | 2-3 ms | 15-20 ms | 50-65 Hz |
+| 200k points | 4k points | 5-8 ms | 1-2 ms | 10-12 ms | 80-100 Hz |
 
-- ROS2 Humble or later
-- PCL (Point Cloud Library)
-- Eigen3
-- sensor_msgs
-- geometry_msgs
-- visualization_msgs
+**Note**: Performance scales with point count and voxel size.
 
 ## Technical Notes
 
-### Why Cluster-Based Wall Detection?
+### Why Percentile-Based Detection?
 
-**Alternative approach**: Run RANSAC on entire no_floor_cloud
-- ❌ Problem: Finds dominant plane only (misses other walls)
-- ❌ Problem: Iterative removal is slow and unreliable
+**Problem with fixed height**:
+- Robot pitch/roll changes effective floor height
+- Uneven warehouse floors vary in height
+- Camera calibration errors accumulate
 
-**Our approach**: Cluster first, then detect plane in each cluster
-- ✓ Detects multiple walls simultaneously
-- ✓ Each cluster likely represents one object/wall
-- ✓ More robust to outliers
-- ✓ Better for warehouse environments with multiple walls
+**Percentile solution**:
+- **Robust to outliers**: Ignores high objects and sensor noise
+- **Adaptive**: Automatically adjusts to robot orientation
+- **Statistical**: Uses data distribution, not absolute values
+- **Fast**: O(N log N) sorting is acceptable for voxelized cloud
+
+**Example**:
+```
+Robot tilts 5° forward:
+  Front of floor: z = -0.04m
+  Back of floor: z = +0.04m
+
+Fixed mode (floor_height=0.0):
+  → Misses front, includes back objects ❌
+
+Auto mode (1st percentile):
+  → Finds z = -0.04m, adjusts range ✓
+```
+
+### Why 3x3x3 Neighborhood Filtering?
+
+**Alternatives considered**:
+1. **KD-tree radius search**: O(N log N), too slow
+2. **Single voxel check**: O(N), but removes valid sparse regions
+3. **3x3x3 neighborhood**: O(N), preserves continuity ✓
+
+**Why it works**:
+- Isolated noise: 1 occupied voxel → removed
+- Valid sparse region: 3+ occupied voxels → kept
+- Dense region: Many occupied voxels → kept
 
 ### Coordinate Frame Convention
 
-The package follows ROS REP-103 and REP-105:
-- **Camera optical frame**: X=right, Y=down, Z=forward
-- **Robot base frame**: X=forward, Y=left, Z=up
-
-### Why Robot Frame Processing?
+Follows ROS REP-103 and REP-105:
+- **Camera optical frame**: X=right, Y=down, Z=forward (per REP-103)
+- **Robot base frame**: X=forward, Y=left, Z=up (per REP-105)
 
 Processing in robot frame provides:
-1. **Intuitive parameters**: "Floor at Z=0" instead of "Floor at Y=0.8"
-2. **Easy calibration**: Measure camera height directly
-3. **Operator-friendly**: Field technicians can understand Z-height settings
-4. **Consistent semantics**: Height = Z coordinate (natural interpretation)
+1. Intuitive parameters (height = Z coordinate)
+2. Easy calibration (measure camera height directly)
+3. Operator-friendly (field technicians understand Z-height)
+
+## Dependencies
+
+- ROS2 Foxy or later
+- PCL (Point Cloud Library) 1.10+
+- Eigen3
+- sensor_msgs
 
 ## License
 
@@ -573,11 +761,11 @@ MIT
 
 ## Authors
 
-cwon789 (wonyoung chung)
+cwon789 (Wonyoung Chung)
 
 ## References
 
-- RANSAC: Fischler & Bolles, "Random Sample Consensus", 1981
-- PCL: Point Cloud Library - https://pointclouds.org/
-- ROS REP-103: Standard Units of Measure and Coordinate Conventions
-- ROS REP-105: Coordinate Frames for Mobile Platforms
+- **RANSAC**: Fischler & Bolles, "Random Sample Consensus", Communications of the ACM, 1981
+- **PCL**: Point Cloud Library - https://pointclouds.org/
+- **ROS REP-103**: Standard Units of Measure and Coordinate Conventions
+- **ROS REP-105**: Coordinate Frames for Mobile Platforms
