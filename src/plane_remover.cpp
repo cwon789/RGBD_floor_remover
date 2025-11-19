@@ -7,6 +7,7 @@
 #include <cmath>
 #include <memory>
 #include <unordered_map>
+#include <iomanip>
 
 namespace floor_removal_rgbd
 {
@@ -26,7 +27,7 @@ void PlaneRemover::reset()
   // No temporal state to reset
 }
 
-PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud_camera)
+PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud_camera)
 {
   PlaneRemovalResult result;
 
@@ -38,19 +39,15 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>
 
   // Step 1: Transform to robot frame (X=forward, Y=left, Z=up)
   auto cloud_robot = transformToStandardFrame(cloud_camera);
-  std::cout << "[DEBUG] Transformed cloud size: " << cloud_robot->points.size() << std::endl;
 
   // Step 2: Filter by max detection distance (in robot frame, X=forward is depth)
   auto cloud_filtered = filterByDistance(cloud_robot);
-  std::cout << "[DEBUG] Filtered cloud size (within " << params_.max_detection_distance
-            << "m): " << cloud_filtered->points.size() << std::endl;
 
   // Step 3: Apply voxel grid downsampling if enabled (work in robot frame)
   auto cloud_voxelized = cloud_filtered;
   if (params_.use_voxel_grid) {
     cloud_voxelized = applyVoxelGrid(cloud_filtered);
     result.voxelized_points = cloud_voxelized->points.size();
-    std::cout << "[DEBUG] Voxelized cloud size: " << result.voxelized_points << std::endl;
   } else {
     result.voxelized_points = cloud_filtered->points.size();
   }
@@ -69,21 +66,20 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>
     if (min_z > params_.max_floor_z) min_z = params_.max_floor_z;
     if (max_z < min_z) max_z = min_z + params_.floor_detection_thickness;
     if (max_z > params_.max_floor_z + 0.15) max_z = params_.max_floor_z + 0.15;
-
-    std::cout << "[DEBUG] Auto mode - floor Z range: [" << min_z << ", " << max_z << "]" << std::endl;
   } else {
     min_z = params_.floor_height;
     max_z = min_z + params_.floor_detection_thickness;
-    std::cout << "[DEBUG] Fixed mode - floor Z range: [" << min_z << ", " << max_z << "]" << std::endl;
   }
 
   auto floor_region = extractFloorRegion(cloud_voxelized, min_z, max_z);
   result.floor_region_points = floor_region->points.size();
-  std::cout << "[DEBUG] Floor region points for RANSAC: " << result.floor_region_points << std::endl;
 
   if (floor_region->points.empty()) {
-    std::cout << "[DEBUG] Floor region is empty - returning transformed cloud without floor removal" << std::endl;
-    // Return transformed and voxelized clouds without floor separation
+    // State change: plane lost
+    if (prev_plane_found_) {
+      std::cout << "[WARNING] Floor plane LOST - floor region is empty" << std::endl;
+      prev_plane_found_ = false;
+    }
     result.no_floor_cloud = cloud_filtered;
     result.no_floor_cloud_voxelized = cloud_voxelized;
     return result;
@@ -92,7 +88,11 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>
   // Step 5: Detect floor plane using RANSAC on floor region
   double nx, ny, nz, d, inlier_ratio;
   if (!detectFloorPlane(floor_region, nx, ny, nz, d, inlier_ratio)) {
-    std::cout << "[DEBUG] Failed to detect floor plane - returning transformed cloud without floor removal" << std::endl;
+    // State change: plane lost
+    if (prev_plane_found_) {
+      std::cout << "[WARNING] Floor plane LOST - RANSAC detection failed" << std::endl;
+      prev_plane_found_ = false;
+    }
     result.no_floor_cloud = cloud_filtered;
     result.no_floor_cloud_voxelized = cloud_voxelized;
     return result;
@@ -100,7 +100,11 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>
 
   // Step 6: Validate plane (in robot frame, nz should be significant)
   if (!isPlaneValid(nz)) {
-    std::cout << "[DEBUG] Plane validation failed (nz=" << nz << ") - returning transformed cloud without floor removal" << std::endl;
+    // State change: plane lost
+    if (prev_plane_found_) {
+      std::cout << "[WARNING] Floor plane LOST - validation failed (nz=" << nz << ")" << std::endl;
+      prev_plane_found_ = false;
+    }
     result.no_floor_cloud = cloud_filtered;
     result.no_floor_cloud_voxelized = cloud_voxelized;
     return result;
@@ -111,15 +115,18 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>
   result.ny = ny;
   result.nz = nz;
   result.d = d;
-  std::cout << "[DEBUG] Floor plane found: nx=" << nx << ", ny=" << ny
-            << ", nz=" << nz << ", d=" << d << std::endl;
+
+  // State change: plane newly found
+  if (!prev_plane_found_) {
+    std::cout << "[INFO] Floor plane FOUND: normal=[" << nx << ", " << ny << ", " << nz
+              << "], d=" << d << std::endl;
+    prev_plane_found_ = true;
+  }
 
   // Step 6: Remove points below the plane (floor removal)
   // In robot frame Z=up, so points below plane have negative signed distance
   removePointsBelowPlane(cloud_filtered, nx, ny, nz, d, result.floor_cloud, result.no_floor_cloud);
   result.floor_points = result.floor_cloud->points.size();
-  std::cout << "[DEBUG] Floor points: " << result.floor_points
-            << ", No-floor points: " << result.no_floor_cloud->points.size() << std::endl;
 
   // Step 7: Classify voxelized cloud for visualization
   removePointsBelowPlane(cloud_voxelized, nx, ny, nz, d,
@@ -139,10 +146,10 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZRGB>
   return result;
 }
 
-pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::transformToStandardFrame(
-  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud_camera)
+pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::transformToStandardFrame(
+  const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud_camera)
 {
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_standard(new pcl::PointCloud<pcl::PointXYZRGB>);
+  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_standard(new pcl::PointCloud<pcl::PointXYZ>);
   cloud_standard->header = cloud_camera->header;
   cloud_standard->points.reserve(cloud_camera->points.size());
 
@@ -154,11 +161,10 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::transformToStandardFrame(
       continue;
     }
 
-    pcl::PointXYZRGB base_point;
+    pcl::PointXYZ base_point;
     base_point.x = cam_point.z;   // forward = depth
     base_point.y = -cam_point.x;  // left = -right
     base_point.z = -cam_point.y;  // up = -down
-    base_point.rgb = cam_point.rgb;
 
     // Step 2: Apply additional extrinsic transform if enabled
     if (!params_.use_default_transform) {
@@ -202,13 +208,13 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::transformToStandardFrame(
   return cloud_standard;
 }
 
-pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::applyVoxelGrid(
-  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud)
+pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::applyVoxelGrid(
+  const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud)
 {
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_downsampled(new pcl::PointCloud<pcl::PointXYZRGB>);
+  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_downsampled(new pcl::PointCloud<pcl::PointXYZ>);
 
   try {
-    pcl::VoxelGrid<pcl::PointXYZRGB> voxel_filter;
+    pcl::VoxelGrid<pcl::PointXYZ> voxel_filter;
     voxel_filter.setInputCloud(cloud);
     voxel_filter.setLeafSize(params_.voxel_leaf_size, params_.voxel_leaf_size, params_.voxel_leaf_size);
     voxel_filter.filter(*cloud_downsampled);
@@ -225,12 +231,12 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::applyVoxelGrid(
   return cloud_downsampled;
 }
 
-pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::filterByDistance(
-  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud)
+pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::filterByDistance(
+  const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud)
 {
   // Filter points by distance from camera origin and maximum height
   // In robot frame: X=forward (depth), Z=up (height)
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZRGB>);
+  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZ>);
   cloud_filtered->header = cloud->header;
   cloud_filtered->points.reserve(cloud->points.size());
 
@@ -252,7 +258,7 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::filterByDistance(
   return cloud_filtered;
 }
 
-double PlaneRemover::findMinZ(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud)
+double PlaneRemover::findMinZ(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud)
 {
   // Find minimum Z (robot frame: Z=up, so min Z = lowest point = floor)
   double min_z = 1e6;
@@ -263,7 +269,7 @@ double PlaneRemover::findMinZ(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& clou
   return min_z;
 }
 
-double PlaneRemover::findMinZPercentile(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, double percentile)
+double PlaneRemover::findMinZPercentile(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, double percentile)
 {
   if (cloud->points.empty()) return 0.0;
 
@@ -280,7 +286,7 @@ double PlaneRemover::findMinZPercentile(const pcl::PointCloud<pcl::PointXYZRGB>:
   return static_cast<double>(z_values[index]);
 }
 
-double PlaneRemover::findMaxZPercentile(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, double percentile)
+double PlaneRemover::findMaxZPercentile(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, double percentile)
 {
   if (cloud->points.empty()) return 0.0;
 
@@ -297,10 +303,10 @@ double PlaneRemover::findMaxZPercentile(const pcl::PointCloud<pcl::PointXYZRGB>:
   return static_cast<double>(z_values[index]);
 }
 
-pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::filterByValidZ(
-  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud)
+pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::filterByValidZ(
+  const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud)
 {
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZRGB>);
+  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZ>);
   cloud_filtered->header = cloud->header;
   cloud_filtered->points.reserve(cloud->points.size());
 
@@ -317,11 +323,11 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::filterByValidZ(
   return cloud_filtered;
 }
 
-pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::extractFloorRegion(
-  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, double min_z, double max_z)
+pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::extractFloorRegion(
+  const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, double min_z, double max_z)
 {
   // Robot frame: Z=up, so floor is between min_z and max_z
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr floor_region(new pcl::PointCloud<pcl::PointXYZRGB>);
+  pcl::PointCloud<pcl::PointXYZ>::Ptr floor_region(new pcl::PointCloud<pcl::PointXYZ>);
   for (const auto& point : cloud->points) {
     if (point.z >= min_z && point.z <= max_z) {
       floor_region->points.push_back(point);
@@ -336,7 +342,7 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::extractFloorRegion(
 }
 
 bool PlaneRemover::detectFloorPlane(
-  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+  const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
   double& nx, double& ny, double& nz, double& d, double& inlier_ratio)
 {
   // Need at least 10 points for RANSAC
@@ -348,7 +354,7 @@ bool PlaneRemover::detectFloorPlane(
   pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients);
   pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
 
-  pcl::SACSegmentation<pcl::PointXYZRGB> seg;
+  pcl::SACSegmentation<pcl::PointXYZ> seg;
   seg.setOptimizeCoefficients(true);
   seg.setModelType(pcl::SACMODEL_PLANE);
   seg.setMethodType(pcl::SAC_RANSAC);
@@ -386,10 +392,10 @@ bool PlaneRemover::isPlaneValid(double nz)
 }
 
 void PlaneRemover::removePointsBelowPlane(
-  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+  const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
   double nx, double ny, double nz, double d,
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr& floor_cloud,
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr& no_floor_cloud)
+  pcl::PointCloud<pcl::PointXYZ>::Ptr& floor_cloud,
+  pcl::PointCloud<pcl::PointXYZ>::Ptr& no_floor_cloud)
 {
   // Remove points below the plane (floor removal)
   // In robot frame (Z=up), floor normal points upward (nz > 0)
@@ -421,11 +427,11 @@ void PlaneRemover::removePointsBelowPlane(
   no_floor_cloud->is_dense = false;
 }
 
-pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::projectTo2D(
-  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::projectTo2D(
+  const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
   double nx, double ny, double nz, double d)
 {
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_2d(new pcl::PointCloud<pcl::PointXYZRGB>);
+  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_2d(new pcl::PointCloud<pcl::PointXYZ>);
   cloud_2d->header = cloud->header;
   cloud_2d->points.reserve(cloud->points.size());
 
@@ -446,7 +452,7 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::projectTo2D(
     double signed_distance = unit_nx * point.x + unit_ny * point.y + unit_nz * point.z + d / norm;
     
     // Project point onto plane by moving along normal direction
-    pcl::PointXYZRGB point_2d = point;
+    pcl::PointXYZ point_2d = point;
     point_2d.x -= signed_distance * unit_nx;
     point_2d.y -= signed_distance * unit_ny;
     point_2d.z -= signed_distance * unit_nz;
@@ -461,8 +467,8 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::projectTo2D(
   return cloud_2d;
 }
 
-pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::removeFloorNoise(
-  const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+pcl::PointCloud<pcl::PointXYZ>::Ptr PlaneRemover::removeFloorNoise(
+  const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
   double floor_z)
 {
   if (!params_.enable_noise_removal || cloud->points.empty()) {
@@ -493,7 +499,7 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::removeFloorNoise(
   }
 
   // Second pass: filter based on neighborhood occupancy (3x3x3 voxels)
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZRGB>);
+  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZ>);
   cloud_filtered->header = cloud->header;
   cloud_filtered->points.reserve(cloud->points.size());
 
@@ -541,8 +547,14 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr PlaneRemover::removeFloorNoise(
   cloud_filtered->height = 1;
   cloud_filtered->is_dense = false;
 
-  if (noise_removed > 0) {
-    std::cout << "[DEBUG] Removed " << noise_removed << " isolated floor noise points" << std::endl;
+  // Only log if significant noise was removed (> 10% of near-floor points)
+  size_t near_floor_points = cloud->points.size() - cloud_filtered->points.size() + noise_removed;
+  if (noise_removed > 0 && near_floor_points > 0) {
+    double noise_ratio = 100.0 * noise_removed / near_floor_points;
+    if (noise_ratio > 10.0) {
+      std::cout << "[INFO] Removed " << noise_removed << " isolated floor noise points ("
+                << std::fixed << std::setprecision(1) << noise_ratio << "%)" << std::endl;
+    }
   }
 
   return cloud_filtered;

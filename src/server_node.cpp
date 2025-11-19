@@ -161,7 +161,7 @@ void FloorRemovalServerNode::loadParameters()
 void FloorRemovalServerNode::cloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
 {
   // Convert ROS message to PCL point cloud
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_camera(new pcl::PointCloud<pcl::PointXYZRGB>);
+  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_camera(new pcl::PointCloud<pcl::PointXYZ>);
   pcl::fromROSMsg(*msg, *cloud_camera);
 
   if (cloud_camera->points.empty()) {

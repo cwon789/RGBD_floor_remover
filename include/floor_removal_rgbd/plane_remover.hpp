@@ -72,11 +72,11 @@ struct PlaneRemoverParams
  */
 struct PlaneRemovalResult
 {
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr floor_cloud;
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr no_floor_cloud;
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr floor_cloud_voxelized;
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr no_floor_cloud_voxelized;
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr no_floor_cloud_voxelized_2d_projected;  // 2D projection of no_floor_cloud_voxelized
+  pcl::PointCloud<pcl::PointXYZ>::Ptr floor_cloud;
+  pcl::PointCloud<pcl::PointXYZ>::Ptr no_floor_cloud;
+  pcl::PointCloud<pcl::PointXYZ>::Ptr floor_cloud_voxelized;
+  pcl::PointCloud<pcl::PointXYZ>::Ptr no_floor_cloud_voxelized;
+  pcl::PointCloud<pcl::PointXYZ>::Ptr no_floor_cloud_voxelized_2d_projected;  // 2D projection of no_floor_cloud_voxelized
 
   // Plane coefficients: nx*x + ny*y + nz*z + d = 0
   double nx, ny, nz, d;
@@ -90,11 +90,11 @@ struct PlaneRemovalResult
 
 
   PlaneRemovalResult()
-    : floor_cloud(new pcl::PointCloud<pcl::PointXYZRGB>)
-    , no_floor_cloud(new pcl::PointCloud<pcl::PointXYZRGB>)
-    , floor_cloud_voxelized(new pcl::PointCloud<pcl::PointXYZRGB>)
-    , no_floor_cloud_voxelized(new pcl::PointCloud<pcl::PointXYZRGB>)
-    , no_floor_cloud_voxelized_2d_projected(new pcl::PointCloud<pcl::PointXYZRGB>)
+    : floor_cloud(new pcl::PointCloud<pcl::PointXYZ>)
+    , no_floor_cloud(new pcl::PointCloud<pcl::PointXYZ>)
+    , floor_cloud_voxelized(new pcl::PointCloud<pcl::PointXYZ>)
+    , no_floor_cloud_voxelized(new pcl::PointCloud<pcl::PointXYZ>)
+    , no_floor_cloud_voxelized_2d_projected(new pcl::PointCloud<pcl::PointXYZ>)
     , nx(0), ny(0), nz(0), d(0)
   {}
 };
@@ -123,7 +123,7 @@ public:
    * @param cloud_camera Input point cloud in camera optical frame (X=right, Y=down, Z=forward)
    * @return PlaneRemovalResult containing separated floor and non-floor clouds
    */
-  PlaneRemovalResult process(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud_camera);
+  PlaneRemovalResult process(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud_camera);
 
   /**
    * @brief Update algorithm parameters
@@ -148,31 +148,31 @@ private:
    * @param cloud_camera Input cloud in camera frame
    * @return Transformed cloud in standard frame
    */
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr transformToStandardFrame(
-    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud_camera);
+  pcl::PointCloud<pcl::PointXYZ>::Ptr transformToStandardFrame(
+    const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud_camera);
 
   /**
    * @brief Apply voxel grid downsampling
    * @param cloud Input cloud
    * @return Downsampled cloud
    */
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr applyVoxelGrid(
-    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud);
+  pcl::PointCloud<pcl::PointXYZ>::Ptr applyVoxelGrid(
+    const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud);
 
   /**
    * @brief Filter points by maximum detection distance
    * @param cloud Input cloud
    * @return Filtered cloud with points within max_detection_distance
    */
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr filterByDistance(
-    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud);
+  pcl::PointCloud<pcl::PointXYZ>::Ptr filterByDistance(
+    const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud);
 
   /**
    * @brief Find minimum Z (robot frame: Z=up)
    * @param cloud Input cloud
    * @return Minimum Z value
    */
-  double findMinZ(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud);
+  double findMinZ(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud);
 
   /**
    * @brief Find minimum Z at given percentile
@@ -180,7 +180,7 @@ private:
    * @param percentile Percentile (1.0 = lowest 1%)
    * @return Z value at percentile
    */
-  double findMinZPercentile(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, double percentile);
+  double findMinZPercentile(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, double percentile);
 
   /**
    * @brief Find maximum Z at given percentile
@@ -188,15 +188,15 @@ private:
    * @param percentile Percentile (10.0 = lowest 10%)
    * @return Z value at percentile
    */
-  double findMaxZPercentile(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, double percentile);
+  double findMaxZPercentile(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, double percentile);
 
   /**
    * @brief Filter out invalid Z points
    * @param cloud Input cloud
    * @return Filtered cloud
    */
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr filterByValidZ(
-    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud);
+  pcl::PointCloud<pcl::PointXYZ>::Ptr filterByValidZ(
+    const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud);
 
   /**
    * @brief Extract floor region points for RANSAC
@@ -205,8 +205,8 @@ private:
    * @param max_z Maximum Z value
    * @return Floor region point cloud
    */
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr extractFloorRegion(
-    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, double min_z, double max_z);
+  pcl::PointCloud<pcl::PointXYZ>::Ptr extractFloorRegion(
+    const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, double min_z, double max_z);
 
   /**
    * @brief Detect floor plane using RANSAC on voxelized cloud
@@ -219,7 +219,7 @@ private:
    * @return True if plane detected successfully
    */
   bool detectFloorPlane(
-    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+    const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
     double& nx, double& ny, double& nz, double& d, double& inlier_ratio);
 
   /**
@@ -240,10 +240,10 @@ private:
    * @param no_floor_cloud Output: non-floor points (above plane)
    */
   void removePointsBelowPlane(
-    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+    const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
     double nx, double ny, double nz, double d,
-    pcl::PointCloud<pcl::PointXYZRGB>::Ptr& floor_cloud,
-    pcl::PointCloud<pcl::PointXYZRGB>::Ptr& no_floor_cloud);
+    pcl::PointCloud<pcl::PointXYZ>::Ptr& floor_cloud,
+    pcl::PointCloud<pcl::PointXYZ>::Ptr& no_floor_cloud);
 
   /**
    * @brief Project point cloud to 2D plane (Z=0)
@@ -254,8 +254,8 @@ private:
    * @param d Plane distance
    * @return 2D projected cloud
    */
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr projectTo2D(
-    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+  pcl::PointCloud<pcl::PointXYZ>::Ptr projectTo2D(
+    const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
     double nx, double ny, double nz, double d);
 
   /**
@@ -264,11 +264,14 @@ private:
    * @param floor_z Detected floor Z height
    * @return Filtered cloud with noise removed
    */
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr removeFloorNoise(
-    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud,
+  pcl::PointCloud<pcl::PointXYZ>::Ptr removeFloorNoise(
+    const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
     double floor_z);
 
   PlaneRemoverParams params_;
+
+  // State tracking for debug logging
+  bool prev_plane_found_ = false;  // Track previous plane detection state
 };
 
 }  // namespace floor_removal_rgbd

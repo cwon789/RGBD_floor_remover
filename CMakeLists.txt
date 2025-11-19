@@ -1,9 +1,14 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.10...3.27)
 project(floor_removal_rgbd)
 
 # Default to C++14
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 14)
+endif()
+
+# Suppress policy warnings (keep OLD for ROS Foxy compatibility)
+if(POLICY CMP0148)
+  cmake_policy(SET CMP0148 OLD)
 endif()
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
