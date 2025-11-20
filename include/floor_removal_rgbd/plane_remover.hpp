@@ -47,6 +47,10 @@ struct PlaneRemoverParams
   // Detection range parameters (camera optical frame)
   double max_detection_distance = 10.0;     // maximum detection distance from camera (meters)
   double min_points_for_plane = 50;         // minimum points in detection region for RANSAC
+
+  // Temporal smoothing parameters
+  bool enable_plane_smoothing = true;       // enable temporal smoothing of plane coefficients
+  double plane_smoothing_alpha = 0.3;       // smoothing factor (0-1): lower = more smoothing
 };
 
 /**
@@ -223,6 +227,13 @@ private:
 
   // State tracking for debug logging
   bool prev_plane_found_ = false;  // Track previous plane detection state
+
+  // Temporal smoothing state
+  double prev_nx_ = 0.0;
+  double prev_ny_ = 0.0;
+  double prev_nz_ = 0.0;
+  double prev_d_ = 0.0;
+  bool has_prev_plane_ = false;  // Whether we have a previous plane for smoothing
 };
 
 }  // namespace floor_removal_rgbd

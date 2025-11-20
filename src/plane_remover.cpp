@@ -24,7 +24,13 @@ void PlaneRemover::setParams(const PlaneRemoverParams& params)
 
 void PlaneRemover::reset()
 {
-  // No temporal state to reset
+  // Reset temporal smoothing state
+  prev_nx_ = 0.0;
+  prev_ny_ = 0.0;
+  prev_nz_ = 0.0;
+  prev_d_ = 0.0;
+  has_prev_plane_ = false;
+  prev_plane_found_ = false;
 }
 
 PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud_camera)
@@ -73,6 +79,7 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZ>::P
       std::cout << "[WARNING] Floor plane LOST - RANSAC detection failed" << std::endl;
       prev_plane_found_ = false;
     }
+    has_prev_plane_ = false;  // Reset smoothing state
     result.no_floor_cloud = cloud_filtered;
     result.no_floor_cloud_voxelized = cloud_filtered;
     return result;
@@ -85,10 +92,34 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZ>::P
       std::cout << "[WARNING] Floor plane LOST - validation failed (ny=" << ny << ")" << std::endl;
       prev_plane_found_ = false;
     }
+    has_prev_plane_ = false;  // Reset smoothing state
     result.no_floor_cloud = cloud_filtered;
     result.no_floor_cloud_voxelized = cloud_filtered;
     return result;
   }
+
+  // Step 5.5: Apply temporal smoothing to plane coefficients (reduce jitter)
+  if (params_.enable_plane_smoothing && has_prev_plane_) {
+    double alpha = params_.plane_smoothing_alpha;
+    nx = alpha * nx + (1.0 - alpha) * prev_nx_;
+    ny = alpha * ny + (1.0 - alpha) * prev_ny_;
+    nz = alpha * nz + (1.0 - alpha) * prev_nz_;
+    d = alpha * d + (1.0 - alpha) * prev_d_;
+
+    // Re-normalize the plane normal after smoothing
+    double norm = std::sqrt(nx*nx + ny*ny + nz*nz);
+    nx /= norm;
+    ny /= norm;
+    nz /= norm;
+    d /= norm;
+  }
+
+  // Update previous plane for next frame
+  prev_nx_ = nx;
+  prev_ny_ = ny;
+  prev_nz_ = nz;
+  prev_d_ = d;
+  has_prev_plane_ = true;
 
   result.plane_found = true;
   result.nx = nx;
