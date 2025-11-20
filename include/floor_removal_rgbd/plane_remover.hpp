@@ -48,9 +48,10 @@ struct PlaneRemoverParams
   double max_detection_distance = 10.0;     // maximum detection distance from camera (meters)
   double min_points_for_plane = 50;         // minimum points in detection region for RANSAC
 
-  // Temporal smoothing parameters
-  bool enable_plane_smoothing = true;       // enable temporal smoothing of plane coefficients
-  double plane_smoothing_alpha = 0.3;       // smoothing factor (0-1): lower = more smoothing
+  // Plane stability parameters
+  bool enable_plane_stability = true;       // enable plane stability validation
+  double max_plane_angle_change = 5.0;      // degrees - max normal angle change per frame
+  double max_plane_distance_change = 0.05;  // meters - max distance change per frame
 };
 
 /**

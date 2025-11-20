@@ -38,6 +38,7 @@ floor_removal_node:
     # Detection Range
     max_detection_distance: 15.0       # meters - max distance from camera
 
-    # Temporal Smoothing
-    enable_plane_smoothing: true       # enable plane coefficient smoothing
-    plane_smoothing_alpha: 0.3         # smoothing factor (0-1): lower = more smoothing
+    # Plane Stability
+    enable_plane_stability: true       # enable plane stability validation
+    max_plane_angle_change: 5.0        # degrees - max normal angle change per frame
+    max_plane_distance_change: 0.05    # meters - max distance change per frame

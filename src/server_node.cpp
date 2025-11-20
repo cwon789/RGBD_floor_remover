@@ -33,8 +33,9 @@ FloorRemovalServerNode::FloorRemovalServerNode()
   params.noise_plane_distance_margin = this->get_parameter("noise_plane_distance_margin").as_double();
   params.max_detection_distance = this->get_parameter("max_detection_distance").as_double();
   params.min_points_for_plane = this->get_parameter("min_points_for_plane").as_int();
-  params.enable_plane_smoothing = this->get_parameter("enable_plane_smoothing").as_bool();
-  params.plane_smoothing_alpha = this->get_parameter("plane_smoothing_alpha").as_double();
+  params.enable_plane_stability = this->get_parameter("enable_plane_stability").as_bool();
+  params.max_plane_angle_change = this->get_parameter("max_plane_angle_change").as_double();
+  params.max_plane_distance_change = this->get_parameter("max_plane_distance_change").as_double();
 
   plane_remover_ = std::make_unique<PlaneRemover>(params);
 
@@ -77,9 +78,10 @@ FloorRemovalServerNode::FloorRemovalServerNode()
               params.use_voxel_grid ? "enabled" : "disabled",
               params.voxel_leaf_size);
   RCLCPP_INFO(this->get_logger(), "  Noise removal: %s", params.enable_noise_removal ? "enabled" : "disabled");
-  RCLCPP_INFO(this->get_logger(), "  Plane smoothing: %s (alpha: %.2f)",
-              params.enable_plane_smoothing ? "enabled" : "disabled",
-              params.plane_smoothing_alpha);
+  RCLCPP_INFO(this->get_logger(), "  Plane stability: %s (angle: %.1f°, dist: %.3fm)",
+              params.enable_plane_stability ? "enabled" : "disabled",
+              params.max_plane_angle_change,
+              params.max_plane_distance_change);
 }
 
 void FloorRemovalServerNode::declareParameters()
@@ -121,9 +123,10 @@ void FloorRemovalServerNode::declareParameters()
   // Detection range parameters
   this->declare_parameter<double>("max_detection_distance", 10.0);
 
-  // Temporal smoothing parameters
-  this->declare_parameter<bool>("enable_plane_smoothing", true);
-  this->declare_parameter<double>("plane_smoothing_alpha", 0.3);
+  // Plane stability parameters
+  this->declare_parameter<bool>("enable_plane_stability", true);
+  this->declare_parameter<double>("max_plane_angle_change", 5.0);
+  this->declare_parameter<double>("max_plane_distance_change", 0.05);
 }
 
 void FloorRemovalServerNode::loadParameters()
