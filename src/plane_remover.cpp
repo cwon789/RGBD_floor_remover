@@ -92,69 +92,33 @@ PlaneRemovalResult PlaneRemover::process(const pcl::PointCloud<pcl::PointXYZ>::P
       std::cout << "[WARNING] Floor plane LOST - validation failed (ny=" << ny << ")" << std::endl;
       prev_plane_found_ = false;
     }
-    has_prev_plane_ = false;  // Reset smoothing state
+    has_prev_plane_ = false;
     result.no_floor_cloud = cloud_filtered;
     result.no_floor_cloud_voxelized = cloud_filtered;
     return result;
   }
 
-  // Step 5.5: Validate plane stability (reject outlier detections, keep previous if unstable)
-  if (params_.enable_plane_stability && has_prev_plane_) {
-    // Normalize both normals for comparison
-    double norm_new = std::sqrt(nx*nx + ny*ny + nz*nz);
-    double norm_prev = std::sqrt(prev_nx_*prev_nx_ + prev_ny_*prev_ny_ + prev_nz_*prev_nz_);
+  // Step 5.5: Check RANSAC quality - reject low-confidence detections
+  if (inlier_ratio < params_.min_inlier_ratio && has_prev_plane_) {
+    // RANSAC quality too low - keep previous stable plane
+    nx = prev_nx_;
+    ny = prev_ny_;
+    nz = prev_nz_;
+    d = prev_d_;
 
-    double unit_nx_new = nx / norm_new;
-    double unit_ny_new = ny / norm_new;
-    double unit_nz_new = nz / norm_new;
-
-    double unit_nx_prev = prev_nx_ / norm_prev;
-    double unit_ny_prev = prev_ny_ / norm_prev;
-    double unit_nz_prev = prev_nz_ / norm_prev;
-
-    // Calculate angle between normals using dot product
-    double dot = unit_nx_new * unit_nx_prev + unit_ny_new * unit_ny_prev + unit_nz_new * unit_nz_prev;
-    dot = std::max(-1.0, std::min(1.0, dot));  // Clamp to [-1, 1]
-    double angle_deg = std::acos(std::abs(dot)) * 180.0 / M_PI;  // Use abs for bidirectional normals
-
-    // Calculate distance change (difference in d parameter)
-    double d_new = d / norm_new;
-    double d_prev = prev_d_ / norm_prev;
-    double distance_change = std::abs(d_new - d_prev);
-
-    // Reject if change is too large (likely RANSAC outlier)
-    bool angle_ok = angle_deg <= params_.max_plane_angle_change;
-    bool distance_ok = distance_change <= params_.max_plane_distance_change;
-
-    if (!angle_ok || !distance_ok) {
-      // Keep previous plane (reject noisy detection)
-      nx = prev_nx_;
-      ny = prev_ny_;
-      nz = prev_nz_;
-      d = prev_d_;
-
-      // Optional: log when rejecting (for debugging)
-      static int reject_count = 0;
-      if (++reject_count % 10 == 0) {
-        std::cout << "[DEBUG] Rejected unstable plane (angle: " << std::fixed << std::setprecision(2)
-                  << angle_deg << "°, dist: " << distance_change << "m)" << std::endl;
-      }
-    } else {
-      // Accept new plane (stable change)
-      prev_nx_ = nx;
-      prev_ny_ = ny;
-      prev_nz_ = nz;
-      prev_d_ = d;
+    static int low_quality_count = 0;
+    if (++low_quality_count % 10 == 0) {
+      std::cout << "[DEBUG] Low quality RANSAC (inlier ratio: " << std::fixed << std::setprecision(2)
+                << inlier_ratio << " < " << params_.min_inlier_ratio << "), keeping previous plane" << std::endl;
     }
   } else {
-    // First frame or stability disabled: accept new plane
+    // Good quality or first detection - accept new plane
     prev_nx_ = nx;
     prev_ny_ = ny;
     prev_nz_ = nz;
     prev_d_ = d;
+    has_prev_plane_ = true;
   }
-
-  has_prev_plane_ = true;
 
   result.plane_found = true;
   result.nx = nx;

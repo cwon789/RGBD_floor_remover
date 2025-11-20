@@ -39,6 +39,4 @@ floor_removal_node:
     max_detection_distance: 15.0       # meters - max distance from camera
 
     # Plane Stability
-    enable_plane_stability: true       # enable plane stability validation
-    max_plane_angle_change: 5.0        # degrees - max normal angle change per frame
-    max_plane_distance_change: 0.05    # meters - max distance change per frame
+    min_inlier_ratio: 0.7              # minimum RANSAC inlier ratio (0-1) to trust detection

@@ -49,9 +49,7 @@ struct PlaneRemoverParams
   double min_points_for_plane = 50;         // minimum points in detection region for RANSAC
 
   // Plane stability parameters
-  bool enable_plane_stability = true;       // enable plane stability validation
-  double max_plane_angle_change = 5.0;      // degrees - max normal angle change per frame
-  double max_plane_distance_change = 0.05;  // meters - max distance change per frame
+  double min_inlier_ratio = 0.7;        // minimum RANSAC inlier ratio to trust detection (0-1)
 };
 
 /**
